@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Склад · Дело в коробке</title>
+<meta name="theme-color" content="#FFD43B">
+<meta name="description" content="Складская система фулфилмента «Дело в коробке»">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Склад">
+<link rel="stylesheet" href="app.css?v=1.1.0">
+</head>
+<body>
+
+<!-- ============ ВХОД ============ -->
+<div class="login" id="login" hidden>
+  <header class="band gutter">
+    <div class="band__in">
+      <div class="logo"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 36 11v18L20 37 4 29V11z" fill="#FFC800" stroke="#16181D" stroke-width="2"/><path d="M4 11l16 8 16-8M20 19v18" fill="none" stroke="#16181D" stroke-width="2"/><path d="M12 7l16 8v6" fill="none" stroke="#16181D" stroke-width="3"/></svg><span><b>ДЕЛО В КОРОБКЕ</b><small>Склад · ячейки и сборка</small></span></div>
+    </div>
+  </header>
+  <div class="login__body gutter">
+    <form class="login__card" id="loginForm" autocomplete="on">
+      <h2 id="loginTitle">Вход на склад</h2>
+      <p class="hint" id="loginHint" hidden>Первый запуск. Создайте учётную запись администратора: с ней вы будете заводить сотрудников.</p>
+      <label class="f" id="lfName" hidden>Ваше имя<input id="lName" autocomplete="name" placeholder="Например, Анна"></label>
+      <label class="f">Логин<input id="lLogin" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+      <label class="f">Пароль<input id="lPass" type="password" autocomplete="current-password" required></label>
+      <label class="f" id="lfPass2" hidden>Пароль ещё раз<input id="lPass2" type="password" autocomplete="new-password"></label>
+      <p class="err" id="lErr" role="alert"></p>
+      <button class="btn primary" type="submit" id="lBtn">Войти</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============ ПРИЛОЖЕНИЕ ============ -->
+<div id="app" hidden>
+<header class="band gutter">
+  <div class="band__in">
+    <h1 class="logo"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 36 11v18L20 37 4 29V11z" fill="#FFC800" stroke="#16181D" stroke-width="2"/><path d="M4 11l16 8 16-8M20 19v18" fill="none" stroke="#16181D" stroke-width="2"/><path d="M12 7l16 8v6" fill="none" stroke="#16181D" stroke-width="3"/></svg><span><b>ДЕЛО В КОРОБКЕ</b><small>Склад · ячейки и сборка</small></span></h1>
+    <div class="band__right">
+      <div class="status" id="status">Подключение…</div>
+      <div class="who"><span id="whoName"></span><button type="button" id="logout">Выйти</button></div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap gutter">
+  <div class="offline" id="offline" hidden>Нет связи с сервером. Изменения не сохранятся, пока связь не вернётся.</div>
+
+  <nav class="tabs" role="tablist" id="tabs">
+    <button role="tab" data-tab="rc" type="button">Приёмка</button>
+    <button role="tab" data-tab="mv" type="button">Размещение</button>
+    <button role="tab" data-tab="pick" type="button">Сборка</button>
+    <button role="tab" data-tab="inv" type="button">Инвентаризация</button>
+    <button role="tab" data-tab="stock" type="button">Остатки</button>
+    <button role="tab" data-tab="prod" type="button">Товары</button>
+    <button role="tab" data-tab="cells" type="button">Ячейки</button>
+    <button role="tab" data-tab="log" type="button">Журнал</button>
+    <button role="tab" data-tab="admin" type="button" class="admin-only">Управление</button>
+  </nav>
+
+  <!-- ============ ПРИЁМКА ============ -->
+  <section class="view" id="view-rc" hidden>
+    <div class="panel">
+      <div class="row between"><h2>Приёмка поставки</h2><span class="chip" id="rcState">Новая</span></div>
+      <div class="row">
+        <label class="f">Клиент<input id="rcClient" list="clientList" placeholder="ООО «Пример»"></label>
+        <label class="f">Документ / № поставки<input id="rcDoc" placeholder="необязательно"></label>
+        <label class="f narrow">Куда принять<input id="rcCell" class="mono" placeholder="PRIEM"></label>
+      </div>
+      <details>
+        <summary>Ожидаемый список от клиента (необязательно)</summary>
+        <div class="row" style="margin-top:10px">
+          <label class="btn sm" for="rcFile">Загрузить Excel / CSV</label>
+          <input type="file" id="rcFile" accept=".xlsx,.xls,.csv" hidden>
+          <span class="hint">Столбцы: Артикул, Количество, а также Наименование и Штрихкод, если есть. Тогда будут видны недостачи и излишки.</span>
+        </div>
+      </details>
+    </div>
+
+    <div class="panel">
+      <div class="scan">
+        <input id="rcScan" placeholder="Сканируйте штрихкод или введите артикул" autocomplete="off" enterkeyhint="go">
+        <input id="rcQty" type="number" min="1" value="1" style="width:76px;flex:none" aria-label="Количество за одно сканирование">
+        <button class="btn cam" type="button" data-cam="rcScan" aria-label="Сканировать камерой"></button>
+        <button class="btn primary" id="rcGo" type="button">OK</button>
+      </div>
+      <div id="rcUnknown" hidden></div>
+      <div id="rcTable"></div>
+    </div>
+
+    <div class="panel" id="rcDone" hidden></div>
+
+    <div class="sticky-foot">
+      <button class="btn primary" id="rcCommit" type="button" disabled>Завершить приёмку</button>
+      <button class="btn ghost" id="rcReset" type="button">Сбросить</button>
+    </div>
+
+    <div class="panel">
+      <h2>Последние приёмки</h2>
+      <div class="rc-hist" id="rcHist"></div>
+    </div>
+  </section>
+
+  <!-- ============ РАЗМЕЩЕНИЕ ============ -->
+  <section class="view" id="view-mv" hidden>
+    <div class="panel">
+      <h2>Размещение и перемещение</h2>
+      <p class="hint">Отсканируйте ячейку назначения, затем товары. Источник по умолчанию — зона приёмки.</p>
+      <div class="row">
+        <label class="f">Откуда<input id="mvFrom" class="mono"></label>
+        <label class="f">Куда<input id="mvTo" class="mono" placeholder="сканируйте ячейку"></label>
+      </div>
+      <div class="scan">
+        <input id="mvScan" placeholder="Сканируйте ячейку или товар" autocomplete="off" enterkeyhint="go">
+        <button class="btn cam" type="button" data-cam="mvScan" aria-label="Сканировать камерой"></button>
+        <button class="btn primary" id="mvGo" type="button">OK</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="row between"><h2 id="mvTitle">Товар в ячейке</h2><button class="btn sm ghost" id="mvAll" type="button">Взять всё</button></div>
+      <div id="mvTable"></div>
+    </div>
+    <div class="sticky-foot">
+      <button class="btn primary" id="mvCommit" type="button" disabled>Переместить</button>
+      <button class="btn ghost" id="mvClear" type="button">Сбросить</button>
+    </div>
+  </section>
+
+  <!-- ============ СБОРКА ============ -->
+  <section class="view" id="view-pick" hidden>
+    <div class="panel" id="uploadPanel">
+      <h2>Лист подбора</h2>
+      <label class="drop" id="drop" for="pickFile">
+        <strong>Загрузите Excel или CSV из Wildberries / Ozon</strong>
+        <span class="hint">Можно несколько файлов сразу. Товар ищется по артикулу продавца или по штрихкоду.</span>
+      </label>
+      <input type="file" id="pickFile" accept=".xlsx,.xls,.csv" multiple hidden>
+      <div id="files" class="row" style="flex-direction:column;align-items:stretch;gap:8px"></div>
+      <div class="row" id="pickOpts" hidden>
+        <label class="f">Клиент
+          <select id="pickClient"></select>
+        </label>
+        <label class="switch"><input type="checkbox" id="snake"> Змейкой (чётные стеллажи в обратную сторону)</label>
+      </div>
+      <div class="row" id="pickActions" hidden>
+        <button class="btn primary" id="buildRoute" type="button">Построить маршрут</button>
+        <button class="btn ghost" id="clearFiles" type="button">Очистить</button>
+      </div>
+    </div>
+
+    <div id="routePanel" hidden>
+      <section class="view">
+        <div class="panel">
+          <div class="row between">
+            <h2 id="routeTitle">Маршрут</h2>
+            <span class="chip info" id="routeCount"></span>
+          </div>
+          <div class="progress"><i id="prog"></i></div>
+          <div class="scan">
+            <input id="pkScan" placeholder="Сканируйте ячейку, затем товар" autocomplete="off" enterkeyhint="go">
+            <button class="btn cam" type="button" data-cam="pkScan" aria-label="Сканировать камерой"></button>
+            <button class="btn primary" id="pkGo" type="button">OK</button>
+          </div>
+          <p class="hint">Скан товара засчитывает 1 шт. Нажатие на строку отмечает её целиком. Остатки списываются только кнопкой внизу.</p>
+        </div>
+        <ol class="stops" id="stops"></ol>
+        <div class="panel" id="shortPanel" hidden>
+          <h2>Не хватает на складе</h2>
+          <div class="short" id="short"></div>
+        </div>
+        <div class="sticky-foot">
+          <button class="btn primary" id="commit" type="button" disabled>Списать собранное</button>
+          <button class="btn ghost" id="cancelRoute" type="button">Отменить</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="panel" id="pickEmpty">
+      <div class="empty" style="padding:8px">
+        <b>Как это работает</b>
+        Загрузите лист подбора, и программа найдёт, в каких ячейках лежит каждый артикул, и выстроит обход по порядку адресов. Собрали, отметили, списали.
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ИНВЕНТАРИЗАЦИЯ ============ -->
+  <section class="view" id="view-inv" hidden>
+    <div class="panel">
+      <div class="row between">
+        <h2>Инвентаризация ячейки</h2>
+        <label class="switch"><input type="checkbox" id="invBlind" checked> Слепой пересчёт</label>
+      </div>
+      <p class="hint">Отсканируйте ячейку, затем каждый товар в ней. При слепом пересчёте учётное количество скрыто до конца счёта.</p>
+      <div class="scan">
+        <input id="invScan" placeholder="Сканируйте ячейку или товар" autocomplete="off" enterkeyhint="go">
+        <button class="btn cam" type="button" data-cam="invScan" aria-label="Сканировать камерой"></button>
+        <button class="btn primary" id="invGo" type="button">OK</button>
+      </div>
+      <div class="target" id="invHead"></div>
+    </div>
+    <div class="panel"><div id="invTable"></div></div>
+    <div class="sticky-foot">
+      <button class="btn" id="invReveal" type="button" disabled>Показать расхождения</button>
+      <button class="btn primary" id="invApply" type="button" disabled>Применить пересчёт</button>
+      <button class="btn ghost" id="invReset" type="button">Сбросить</button>
+    </div>
+  </section>
+
+  <!-- ============ ОСТАТКИ ============ -->
+  <section class="view" id="view-stock" hidden>
+    <div class="kv" id="stockKv"></div>
+    <div class="panel admin-only">
+      <h2>Ручная корректировка</h2>
+      <form id="addForm" class="row" autocomplete="off">
+        <label class="f">Ячейка<input id="aCell" class="mono" placeholder="A-01-1-01" required></label>
+        <label class="f">Клиент<input id="aClient" list="clientList" placeholder="ИП Иванов" required></label>
+        <label class="f">Артикул продавца<input id="aArt" required></label>
+        <label class="f">Наименование<input id="aName" placeholder="необязательно"></label>
+        <label class="f narrow">Кол-во<input id="aQty" type="number" value="1" required></label>
+        <button class="btn primary" type="submit" style="align-self:flex-end">Провести</button>
+      </form>
+      <p class="hint">Плюс добавляет товар в ячейку, минус списывает. Каждая корректировка попадает в журнал.</p>
+    </div>
+
+    <div class="panel">
+      <div class="row between">
+        <h2>Excel</h2>
+        <div class="row">
+          <button class="btn sm admin-only" id="tplBtn" type="button">Шаблон раскладки</button>
+          <button class="btn sm" id="exportBtn" type="button">Выгрузить остатки</button>
+        </div>
+      </div>
+      <div class="admin-only" style="display:flex;flex-direction:column;gap:10px">
+        <p class="hint">Таблица со столбцами: Ячейка, Клиент, Артикул, Наименование, Количество, Штрихкод. Подходит для первичной раскладки склада и переноса остатков.</p>
+        <label class="btn" for="stockFile" style="align-self:flex-start">Загрузить раскладку</label>
+        <input type="file" id="stockFile" accept=".xlsx,.xls,.csv" hidden>
+        <div id="importMsg"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="row">
+        <input class="grow" id="q" placeholder="Поиск: ячейка, артикул, название">
+        <select id="fClient" style="flex:0 1 200px"></select>
+        <div class="seg" id="stockMode">
+          <button type="button" data-m="cell" aria-pressed="true">По ячейкам</button>
+          <button type="button" data-m="art" aria-pressed="false">По товарам</button>
+        </div>
+      </div>
+      <div id="stockTable"></div>
+    </div>
+  </section>
+
+  <!-- ============ ТОВАРЫ ============ -->
+  <section class="view" id="view-prod" hidden>
+    <div class="panel">
+      <h2>Карточка товара</h2>
+      <form id="pForm" class="row" autocomplete="off">
+        <label class="f">Клиент<input id="pClient" list="clientList" required></label>
+        <label class="f">Артикул продавца<input id="pArt" required></label>
+        <label class="f">Наименование<input id="pName"></label>
+        <label class="f">Штрихкоды<input id="pBc" class="mono" placeholder="через запятую"></label>
+        <button class="btn primary" type="submit" style="align-self:flex-end">Сохранить</button>
+      </form>
+      <p class="hint">По штрихкоду товар узнаётся при приёмке, размещении, сборке и инвентаризации. У одного товара может быть несколько штрихкодов (WB, Ozon, заводской).</p>
+    </div>
+    <div class="panel">
+      <div class="row between">
+        <h2>Справочник</h2>
+        <div class="row">
+          <button class="btn sm" id="pTpl" type="button">Шаблон Excel</button>
+          <label class="btn sm" for="pFile">Загрузить из Excel</label>
+          <input type="file" id="pFile" accept=".xlsx,.xls,.csv" hidden>
+          <button class="btn sm" id="pFromStock" type="button">Создать из остатков</button>
+        </div>
+      </div>
+      <div id="pMsg"></div>
+      <div class="row">
+        <input class="grow" id="pq" placeholder="Поиск: артикул, название, штрихкод">
+        <select id="pfClient" style="flex:0 1 200px"></select>
+      </div>
+      <div class="row between">
+        <label class="switch"><input type="checkbox" id="pSelAll"> Выбрать все найденные</label>
+        <div class="row">
+          <label class="f narrow" style="flex-direction:row;align-items:center;gap:6px">Копий<input id="pCopies" type="number" min="1" value="1" style="width:64px"></label>
+          <select id="pSize" style="width:auto"><option value="58x40">58×40 мм</option><option value="58x30">58×30 мм</option><option value="a4">A4, 24 на листе</option></select>
+          <button class="btn sm primary" id="pLabels" type="button" disabled>Печать этикеток</button>
+          <button class="btn sm ghost" id="pLabelsFile" type="button" disabled>Файл</button>
+        </div>
+      </div>
+      <div id="pTable"></div>
+    </div>
+  </section>
+
+  <!-- ============ ЯЧЕЙКИ ============ -->
+  <section class="view" id="view-cells" hidden>
+    <div class="panel">
+      <h2>Создать ячейки</h2>
+      <div class="row">
+        <label class="f narrow">Зона<input id="gZone" class="mono" value="A"></label>
+        <label class="f narrow">Стеллаж с<input id="gR1" type="number" min="1" value="1"></label>
+        <label class="f narrow">по<input id="gR2" type="number" min="1" value="3"></label>
+        <label class="f narrow">Ярусов<input id="gT" type="number" min="1" value="4"></label>
+        <label class="f narrow">Мест на ярусе<input id="gP" type="number" min="1" value="5"></label>
+      </div>
+      <div class="row between">
+        <span class="hint" id="gPreview"></span>
+        <button class="btn primary" id="gCreate" type="button">Создать</button>
+      </div>
+      <p class="hint">Адрес: зона-стеллаж-ярус-место. По этому порядку строится маршрут сборки.</p>
+    </div>
+    <div class="panel">
+      <div class="row">
+        <input class="grow" id="cq" placeholder="Поиск ячейки">
+        <select id="cFilter" style="flex:0 1 180px"><option value="">Все</option><option value="empty">Пустые</option><option value="busy">Занятые</option></select>
+      </div>
+      <div class="row between">
+        <label class="switch"><input type="checkbox" id="cSelAll"> Выбрать все найденные</label>
+        <div class="row">
+          <select id="cSize" style="width:auto"><option value="58x40">58×40 мм</option><option value="58x30">58×30 мм</option><option value="a4">A4, 24 на листе</option></select>
+          <button class="btn sm primary" id="cLabels" type="button" disabled>Печать этикеток</button>
+          <button class="btn sm ghost" id="cLabelsFile" type="button" disabled>Файл</button>
+          <button class="btn sm ghost admin-only" id="cDel" type="button" disabled>Удалить пустые</button>
+        </div>
+      </div>
+      <div id="cTable"></div>
+    </div>
+  </section>
+
+  <!-- ============ ЖУРНАЛ ============ -->
+  <section class="view" id="view-log" hidden>
+    <div class="panel">
+      <div class="row">
+        <input class="grow" id="lq" placeholder="Поиск: артикул, ячейка, документ, сотрудник">
+        <select id="lType" style="flex:0 1 180px">
+          <option value="">Все операции</option><option value="receive">Приёмка</option><option value="putaway">Размещение</option><option value="move">Перемещение</option><option value="pick">Сборка</option><option value="inventory">Инвентаризация</option><option value="adjust">Корректировка</option>
+        </select>
+        <select id="lClient" style="flex:0 1 180px"></select>
+        <button class="btn sm" id="lExport" type="button">Выгрузить</button>
+      </div>
+      <div id="lTable"></div>
+      <p class="hint">Показаны последние 500 операций.</p>
+    </div>
+  </section>
+
+  <!-- ============ УПРАВЛЕНИЕ ============ -->
+  <section class="view" id="view-admin" hidden>
+    <div class="panel">
+      <h2>Новый пользователь</h2>
+      <form id="uForm" class="row" autocomplete="off">
+        <label class="f">Имя<input id="uName" placeholder="Иван Петров" required></label>
+        <label class="f">Логин<input id="uLogin" autocapitalize="none" spellcheck="false" placeholder="ivan" required></label>
+        <label class="f">Пароль<input id="uPass" autocomplete="new-password" placeholder="не короче 6 символов" required></label>
+        <label class="f narrow" style="flex-basis:150px">Роль<select id="uRole"><option value="worker">Кладовщик</option><option value="admin">Администратор</option><option value="client">Клиент</option></select></label>
+        <label class="f" id="uClientWrap" hidden>Клиент (компания)<input id="uClient" list="clientList" placeholder="как в остатках, например ООО «АЙМОЛЛ»"></label>
+        <button class="btn primary" type="submit" style="align-self:flex-end">Добавить</button>
+      </form>
+      <p class="hint">Кладовщик принимает, размещает, собирает и пересчитывает. Администратор ещё правит остатки вручную, загружает раскладку, удаляет ячейки и управляет пользователями. Клиент входит в личный кабинет и видит только свои остатки, поставки и движение товара.</p>
+    </div>
+    <div class="panel">
+      <h2>Пользователи</h2>
+      <div id="uTable"></div>
+    </div>
+    <div class="panel">
+      <h2>Кабинет клиента</h2>
+      <p class="hint">Посмотрите, что видит клиент, прежде чем выдавать ему доступ.</p>
+      <div class="row">
+        <select id="pvClient" style="flex:1 1 220px"></select>
+        <button class="btn" id="pvOpen" type="button">Открыть кабинет</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Резервная копия</h2>
+      <p class="hint">Сервер сам сохраняет копию базы раз в сутки и хранит последние 14. Здесь можно скачать копию прямо сейчас.</p>
+      <button class="btn" id="backupBtn" type="button" style="align-self:flex-start">Скачать базу</button>
+      <p class="hint" id="appVersion"></p>
+    </div>
+  </section>
+</div>
+</div>
+
+<!-- ============ КАБИНЕТ КЛИЕНТА ============ -->
+<div id="portal" hidden>
+<header class="band gutter">
+  <div class="band__in">
+    <h1 class="logo"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 36 11v18L20 37 4 29V11z" fill="#FFC800" stroke="#16181D" stroke-width="2"/><path d="M4 11l16 8 16-8M20 19v18" fill="none" stroke="#16181D" stroke-width="2"/><path d="M12 7l16 8v6" fill="none" stroke="#16181D" stroke-width="3"/></svg><span><b>ДЕЛО В КОРОБКЕ</b><small>Личный кабинет клиента</small></span></h1>
+    <div class="band__right">
+      <div class="status" id="ptStatus">Загрузка…</div>
+      <div class="who"><span id="ptWho"></span><button type="button" id="ptLogout">Выйти</button></div>
+    </div>
+  </div>
+</header>
+<div class="wrap gutter">
+  <div class="offline" id="ptOffline" hidden>Нет связи с сервером. Показаны последние загруженные данные.</div>
+  <div class="preview-bar" id="ptPreview" hidden><span id="ptPreviewText"></span><button class="btn sm" type="button" id="ptBack">Вернуться на склад</button></div>
+  <div class="client-head">
+    <h2 id="ptClient"></h2>
+    <span class="hint" id="ptUpdated"></span>
+  </div>
+  <nav class="tabs" role="tablist" id="ptTabs">
+    <button role="tab" data-pt="stock" type="button">Остатки</button>
+    <button role="tab" data-pt="rc" type="button">Поставки</button>
+    <button role="tab" data-pt="ops" type="button">Движение товара</button>
+    <button role="tab" data-pt="pass" type="button" id="ptPassTab">Пароль</button>
+  </nav>
+
+  <section class="view" id="pt-stock" hidden>
+    <div class="kv" id="ptKv"></div>
+    <div class="panel">
+      <div class="row">
+        <input class="grow" id="ptQ" placeholder="Поиск: артикул, название, штрихкод">
+        <label class="switch"><input type="checkbox" id="ptZero"> Показать товары, которых нет в наличии</label>
+        <button class="btn sm" id="ptExport" type="button">Скачать Excel</button>
+      </div>
+      <div id="ptStockTable"></div>
+      <p class="hint">«В приёмке» — товар уже на складе, но ещё не разложен по ячейкам. Он станет доступен к отгрузке после размещения.</p>
+    </div>
+  </section>
+
+  <section class="view" id="pt-rc" hidden>
+    <div class="panel">
+      <h2>Принятые поставки</h2>
+      <div class="rc-hist" id="ptRcList"></div>
+    </div>
+  </section>
+
+  <section class="view" id="pt-ops" hidden>
+    <div class="panel">
+      <div class="row">
+        <input class="grow" id="ptOpsQ" placeholder="Поиск: артикул, документ">
+        <select id="ptOpsType" style="flex:0 1 200px">
+          <option value="">Все операции</option><option value="receive">Поступление</option><option value="pick">Отгрузка</option><option value="inventory">Инвентаризация</option><option value="adjust">Корректировка</option>
+        </select>
+        <button class="btn sm" id="ptOpsExport" type="button">Скачать Excel</button>
+      </div>
+      <div id="ptOpsTable"></div>
+      <p class="hint">Показаны последние 1000 операций по вашим товарам.</p>
+    </div>
+  </section>
+
+  <section class="view" id="pt-pass" hidden>
+    <form class="panel" id="ptPassForm" autocomplete="off" style="max-width:480px">
+      <h2>Сменить пароль</h2>
+      <label class="f">Текущий пароль<input id="ptOld" type="password" autocomplete="current-password" required></label>
+      <label class="f">Новый пароль<input id="ptNew" type="password" autocomplete="new-password" required></label>
+      <label class="f">Новый пароль ещё раз<input id="ptNew2" type="password" autocomplete="new-password" required></label>
+      <p class="err" id="ptPassErr" role="alert"></p>
+      <button class="btn primary" type="submit" style="align-self:flex-start">Сохранить пароль</button>
+    </form>
+  </section>
+</div>
+</div>
+
+<!-- ============ КАМЕРА ============ -->
+<div class="cam-ov" id="camOv" hidden>
+  <div class="cam-top"><b id="camTitle">Сканирование</b><button class="btn sm" type="button" id="camClose">Готово</button></div>
+  <div class="cam-wrap"><video id="camVideo" playsinline muted></video><div class="cam-frame"></div></div>
+  <div class="cam-bot">
+    <span class="cam-last" id="camLast">Наведите камеру на штрихкод</span>
+    <label class="switch"><input type="checkbox" id="camCont" checked> Сканировать подряд</label>
+  </div>
+</div>
+
+<datalist id="clientList"></datalist>
+<div id="toast" hidden></div>
+
+<script src="vendor/xlsx.full.min.js" defer></script>
+<script src="vendor/JsBarcode.all.min.js" defer></script>
+<script src="vendor/zxing.min.js" defer></script>
+<script src="app.js?v=1.1.0" defer></script>
+</body>
+</html>

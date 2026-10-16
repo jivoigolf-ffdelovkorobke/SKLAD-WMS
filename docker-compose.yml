@@ -1,0 +1,10 @@
+# Для своего сервера (VPS): docker compose up -d
+# Приложение откроется на порту 8080. Для HTTPS (нужен камере телефона) поставьте перед ним Caddy или nginx с сертификатом.
+services:
+  sklad:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
