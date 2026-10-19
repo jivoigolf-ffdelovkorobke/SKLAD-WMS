@@ -70,6 +70,41 @@ for (const table of ["ops", "receipts"]) {
 }
 db.exec("CREATE INDEX IF NOT EXISTS ops_ckey ON ops(ckey, id); CREATE INDEX IF NOT EXISTS receipts_ckey ON receipts(ckey, id); CREATE INDEX IF NOT EXISTS stock_ckey ON stock(ckey)");
 
+/* Учёт услуг (версия 1.2): тарифы, индивидуальные цены клиентов, начисления, счета, реквизиты */
+db.exec(`
+CREATE TABLE IF NOT EXISTS services(
+  id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL,
+  price REAL NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'manual', active INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS client_prices(ckey TEXT NOT NULL, service_id INTEGER NOT NULL, price REAL NOT NULL, PRIMARY KEY(ckey, service_id));
+CREATE TABLE IF NOT EXISTS invoices(
+  id INTEGER PRIMARY KEY, number TEXT UNIQUE NOT NULL, client TEXT NOT NULL, ckey TEXT NOT NULL,
+  period_from TEXT NOT NULL, period_to TEXT NOT NULL, total REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'issued', user_id INTEGER, created TEXT NOT NULL, paid TEXT);
+CREATE TABLE IF NOT EXISTS charges(
+  id INTEGER PRIMARY KEY, client TEXT NOT NULL, ckey TEXT NOT NULL, service_id INTEGER NOT NULL,
+  qty REAL NOT NULL, price REAL NOT NULL, amount REAL NOT NULL, day TEXT NOT NULL,
+  period_from TEXT, period_to TEXT, note TEXT NOT NULL DEFAULT '', invoice_id INTEGER, user_id INTEGER, created TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS charges_ckey ON charges(ckey, invoice_id, day);
+CREATE INDEX IF NOT EXISTS invoices_ckey ON invoices(ckey, id);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+`);
+/* kind: receive и pick начисляются сами при приёмке и сборке, storage считается по дням при выставлении счёта,
+   manual добавляют вручную. Цены — стартовые, их меняют в разделе «Счета → Тарифы». */
+const DEFAULT_SERVICES = [
+  ["RECEIVE", "Приёмка товара", "шт", 5, "receive"],
+  ["PICK", "Сборка и отгрузка", "шт", 15, "pick"],
+  ["STORAGE", "Хранение", "шт·сут", 0.5, "storage"],
+  ["PACK", "Упаковка", "шт", 10, "manual"],
+  ["LABEL", "Маркировка (этикетка)", "шт", 5, "manual"],
+  ["DELIVERY", "Доставка на склад маркетплейса", "рейс", 3500, "manual"],
+];
+if (db.prepare("SELECT COUNT(*) n FROM services").get().n === 0) {
+  const ins = db.prepare("INSERT INTO services(code,name,unit,price,kind) VALUES(?,?,?,?,?)");
+  for (const s of DEFAULT_SERVICES) ins.run(...s);
+}
+const SETTINGS_KEYS = ["company_name", "company_inn", "company_address", "bank_name", "bank_bik", "bank_account", "bank_corr_account", "vat_note"];
+db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('vat_note','Без НДС')").run();
+
 const Q = {
   userByLogin: db.prepare("SELECT * FROM users WHERE login=?"),
   userById: db.prepare("SELECT * FROM users WHERE id=?"),
@@ -363,16 +398,19 @@ route("POST", "/api/receive", "staff", ({ body, user }) => {
   if (lines.some(l => l.got < 0)) throw bad("Количество не может быть отрицательным");
   const id = tx(() => {
     addCell(cell);
+    let units = 0;
     for (const l of lines) {
       upsertProduct(client, l.article, l.name, l.barcode ? [l.barcode] : [], { skipConflicts: true });
       if (l.got > 0) {
         addStock(cell, client, l.article, l.name, l.got);
         log(user, { type: "receive", client, article: l.article, name: l.name, qty: l.got, cell, doc });
+        units += l.got;
       }
     }
+    autoCharge(user, "receive", client, units, doc ? `Приёмка ${doc}` : "Приёмка");
     return Number(Q.rcIns.run(now(), user.id, client, doc, cell, JSON.stringify(lines), norm(client)).lastInsertRowid);
   });
-  broadcast(["stock", "products", "ops", "receipts", "cells"], [norm(client)]);
+  broadcast(["stock", "products", "ops", "receipts", "cells", "billing"], [norm(client)]);
   return { ok: true, id };
 });
 
@@ -407,13 +445,17 @@ route("POST", "/api/pick", "staff", ({ body, user }) => {
   let units = 0;
   const ckeys = new Set();
   tx(() => {
+    const perClient = new Map();
     for (const it of items) {
       const row = deltaById(it.id, -it.qty);
       log(user, { type: "pick", client: row.client, article: row.article, name: row.name, qty: it.qty, from: row.cell, doc });
       units += it.qty; ckeys.add(row.ckey);
+      const pc = perClient.get(row.ckey) || { client: row.client, units: 0 };
+      pc.units += it.qty; perClient.set(row.ckey, pc);
     }
+    for (const pc of perClient.values()) autoCharge(user, "pick", pc.client, pc.units, doc ? `Сборка ${doc.slice(0, 120)}` : "Сборка");
   });
-  broadcast(["stock", "ops"], ckeys);
+  broadcast(["stock", "ops", "billing"], ckeys);
   return { ok: true, units };
 });
 
@@ -579,6 +621,251 @@ route("POST", "/api/users/update", "admin", ({ body, user }) => {
   });
   // открытые потоки событий помнят роль и компанию — после изменения доступа переподключаем пользователя
   if (!active || body.password || role !== u.role || client !== u.client) closeStreams(u.id);
+  return { ok: true };
+});
+
+/* ---------- учёт услуг и счета ---------- */
+/* Сутки считаются по московскому времени (сервер на хостинге живёт в UTC) */
+const DAY_SHIFT = (process.env.TZ_OFFSET_HOURS != null ? +process.env.TZ_OFFSET_HOURS : 3) * 3600e3;
+const dayOf = ts => new Date(Date.parse(ts) + DAY_SHIFT).toISOString().slice(0, 10);
+const addDays = (day, n) => new Date(Date.parse(day + "T00:00:00Z") + n * 864e5).toISOString().slice(0, 10);
+const money = v => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
+function parseDay(v, field) {
+  const s = String(v ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || isNaN(Date.parse(s + "T00:00:00Z")) || new Date(s + "T00:00:00Z").toISOString().slice(0, 10) !== s)
+    throw bad(`Неверная дата «${field}»`);
+  return s;
+}
+function parsePrice(v) {
+  const n = Number(String(v ?? "").replace(",", "."));
+  if (!Number.isFinite(n) || n < 0) throw bad("Цена должна быть числом не меньше нуля");
+  return money(n);
+}
+
+const B = {
+  svcById: db.prepare("SELECT * FROM services WHERE id=?"),
+  svcByKind: db.prepare("SELECT * FROM services WHERE kind=? AND active=1 ORDER BY id"),
+  cpGet: db.prepare("SELECT price FROM client_prices WHERE ckey=? AND service_id=?"),
+  chIns: db.prepare("INSERT INTO charges(client,ckey,service_id,qty,price,amount,day,period_from,period_to,note,invoice_id,user_id,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"),
+  invById: db.prepare("SELECT * FROM invoices WHERE id=?"),
+};
+const priceFor = (ckey, svc) => { const r = B.cpGet.get(ckey, svc.id); return r ? r.price : svc.price; };
+function addCharge(user, client, svc, qty, day, note, extra = {}) {
+  client = str(client);
+  const ckey = norm(client), price = priceFor(ckey, svc);
+  return Number(B.chIns.run(client, ckey, svc.id, qty, price, money(qty * price), day, extra.from || null, extra.to || null,
+    str(note, 300), extra.invoiceId || null, user ? user.id : null, now()).lastInsertRowid);
+}
+/* вызывается внутри tx приёмки и сборки */
+function autoCharge(user, kind, client, qty, note) {
+  if (!(qty > 0) || !str(client)) return;
+  for (const svc of B.svcByKind.all(kind)) addCharge(user, client, svc, qty, dayOf(now()), note);
+}
+/* Хранение: остаток клиента на конец каждых суток периода, в штуко-сутках.
+   Идём назад от текущего остатка, вычитая движения, — так результат верен, даже если ранняя история неполная. */
+function storageUnitDays(ckey, from, to) {
+  let bal = db.prepare("SELECT COALESCE(SUM(qty),0) n FROM stock WHERE ckey=?").get(ckey).n;
+  const since = new Date(Date.parse(from + "T00:00:00Z") - DAY_SHIFT).toISOString();
+  const delta = new Map();
+  for (const o of db.prepare("SELECT ts, type, qty FROM ops WHERE ckey=? AND ts>=? AND type IN ('receive','pick','inventory','adjust')").all(ckey, since)) {
+    const d = dayOf(o.ts), q = o.type === "pick" ? -Math.abs(o.qty) : o.type === "receive" ? Math.abs(o.qty) : o.qty;
+    delta.set(d, (delta.get(d) || 0) + q);
+  }
+  for (const [d, q] of delta) if (d > to) bal -= q;
+  let units = 0;
+  for (let d = to; d >= from; d = addDays(d, -1)) { units += Math.max(bal, 0); bal -= delta.get(d) || 0; }
+  return units;
+}
+function storageBilledUntil(ckey) {
+  return db.prepare(`SELECT MAX(c.period_to) d FROM charges c JOIN services s ON s.id=c.service_id JOIN invoices i ON i.id=c.invoice_id
+    WHERE c.ckey=? AND s.kind='storage' AND i.status<>'cancelled'`).get(ckey).d || "";
+}
+const CHARGE_SELECT = `SELECT c.id, c.client, c.service_id, c.qty, c.price, c.amount, c.day, c.period_from, c.period_to, c.note, c.invoice_id,
+  s.name AS service, s.unit, s.kind, i.number AS invoice_number, u.name AS user_name
+  FROM charges c JOIN services s ON s.id=c.service_id LEFT JOIN invoices i ON i.id=c.invoice_id LEFT JOIN users u ON u.id=c.user_id`;
+/* что войдёт в счёт: невыставленные услуги за период + хранение за ещё не оплаченные сутки */
+function invoiceDraft(client, from, to) {
+  const ckey = norm(client);
+  const charges = db.prepare(`${CHARGE_SELECT} WHERE c.ckey=? AND c.invoice_id IS NULL AND c.day BETWEEN ? AND ? ORDER BY c.day, c.id`).all(ckey, from, to);
+  let storage = null;
+  const svc = B.svcByKind.get("storage");
+  if (svc) {
+    const billed = storageBilledUntil(ckey);
+    const sFrom = billed && billed >= from ? addDays(billed, 1) : from;
+    if (sFrom <= to) {
+      const units = storageUnitDays(ckey, sFrom, to);
+      if (units > 0) {
+        const price = priceFor(ckey, svc);
+        storage = { svc, qty: units, price, amount: money(units * price), from: sFrom, to };
+      }
+    }
+  }
+  return { charges, storage };
+}
+function groupLines(charges) {
+  const m = new Map();
+  for (const c of charges) {
+    const k = c.service_id + "|" + c.price;
+    const l = m.get(k) || { service: c.service, unit: c.unit, price: c.price, qty: 0, amount: 0 };
+    l.qty = money(l.qty + c.qty); l.amount = money(l.amount + c.amount); m.set(k, l);
+  }
+  return [...m.values()];
+}
+const storageLine = s => ({ service_id: s.svc.id, service: s.svc.name, unit: s.svc.unit, price: s.price, qty: s.qty, amount: s.amount });
+const getSettings = () => Object.fromEntries(db.prepare("SELECT key, value FROM settings").all().map(r => [r.key, r.value]));
+/* клиент видит только свою компанию, сотрудник — любую (?client=...) */
+function billingClient(user, url, required) {
+  if (user.role === "client") {
+    if (!norm(user.client)) throw bad("Аккаунт не привязан к клиенту. Обратитесь на склад.");
+    return user.client;
+  }
+  if (!isStaff(user)) throw new HttpError(403, "Нет доступа");
+  const c = str(url.searchParams.get("client"));
+  if (required && !c) throw bad("Выберите клиента");
+  return c;
+}
+
+route("GET", "/api/billing/services", "staff", () => ({ services: db.prepare("SELECT * FROM services ORDER BY active DESC, id").all() }));
+route("POST", "/api/billing/services", "admin", ({ body }) => {
+  const name = str(body.name, 120), unit = str(body.unit, 20) || "шт";
+  if (!name) throw bad("Укажите название услуги");
+  const price = parsePrice(body.price);
+  db.prepare("INSERT INTO services(code,name,unit,price,kind) VALUES(?,?,?,?,'manual')").run("S" + crypto.randomBytes(4).toString("hex").toUpperCase(), name, unit, price);
+  broadcast(["billing"]);
+  return { ok: true };
+});
+route("POST", "/api/billing/services/update", "admin", ({ body }) => {
+  const s = B.svcById.get(int(body.id));
+  if (!s) throw bad("Услуга не найдена");
+  const name = body.name != null ? str(body.name, 120) || s.name : s.name;
+  const unit = body.unit != null ? str(body.unit, 20) || s.unit : s.unit;
+  const price = body.price != null ? parsePrice(body.price) : s.price;
+  const active = body.active != null ? (body.active ? 1 : 0) : s.active;
+  db.prepare("UPDATE services SET name=?, unit=?, price=?, active=? WHERE id=?").run(name, unit, price, active, s.id);
+  broadcast(["billing"]);
+  return { ok: true };
+});
+
+route("GET", "/api/billing/prices", "staff", ({ url }) => {
+  const ck = norm(url.searchParams.get("client"));
+  if (!ck) throw bad("Выберите клиента");
+  return {
+    prices: db.prepare(`SELECT s.id AS service_id, s.name, s.unit, s.price AS default_price, cp.price AS client_price
+      FROM services s LEFT JOIN client_prices cp ON cp.service_id=s.id AND cp.ckey=? WHERE s.active=1 ORDER BY s.id`).all(ck),
+  };
+});
+route("POST", "/api/billing/prices", "admin", ({ body }) => {
+  const ck = norm(body.client), s = B.svcById.get(int(body.service_id));
+  if (!ck) throw bad("Выберите клиента");
+  if (!s) throw bad("Услуга не найдена");
+  if (body.price == null || String(body.price).trim() === "") db.prepare("DELETE FROM client_prices WHERE ckey=? AND service_id=?").run(ck, s.id);
+  else db.prepare("INSERT INTO client_prices(ckey,service_id,price) VALUES(?,?,?) ON CONFLICT(ckey,service_id) DO UPDATE SET price=excluded.price").run(ck, s.id, parsePrice(body.price));
+  return { ok: true };
+});
+
+route("GET", "/api/billing/charges", "any", ({ user, url }) => {
+  const client = billingClient(user, url, false);
+  const where = [], args = [];
+  if (client) { where.push("c.ckey=?"); args.push(norm(client)); }
+  if (url.searchParams.get("open") === "1") where.push("c.invoice_id IS NULL");
+  const rows = db.prepare(`${CHARGE_SELECT}${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY c.day DESC, c.id DESC LIMIT 1000`).all(...args);
+  if (user.role === "client") rows.forEach(r => { delete r.user_name; });
+  return { charges: rows };
+});
+route("POST", "/api/billing/charges", "staff", ({ body, user }) => {
+  const client = str(body.client, 120), s = B.svcById.get(int(body.service_id));
+  const qty = money(Number(String(body.qty ?? "").replace(",", ".")));
+  if (!client) throw bad("Укажите клиента");
+  if (!s || !s.active) throw bad("Выберите услугу");
+  if (s.kind === "storage") throw bad("Хранение считается само при выставлении счёта");
+  if (!(qty > 0)) throw bad("Количество должно быть больше нуля");
+  const day = body.day ? parseDay(body.day, "Дата") : dayOf(now());
+  const id = tx(() => addCharge(user, client, s, qty, day, body.note));
+  broadcast(["billing"], [norm(client)]);
+  return { ok: true, id };
+});
+route("POST", "/api/billing/charges/delete", "admin", ({ body }) => {
+  const c = db.prepare("SELECT * FROM charges WHERE id=?").get(int(body.id));
+  if (!c) throw bad("Начисление не найдено");
+  if (c.invoice_id) throw conflict("Услуга уже в счёте. Сначала отмените счёт.");
+  db.prepare("DELETE FROM charges WHERE id=?").run(c.id);
+  broadcast(["billing"], [c.ckey]);
+  return { ok: true };
+});
+
+route("GET", "/api/billing/preview", "admin", ({ url }) => {
+  const client = str(url.searchParams.get("client"));
+  if (!client) throw bad("Выберите клиента");
+  const from = parseDay(url.searchParams.get("from"), "с"), to = parseDay(url.searchParams.get("to"), "по");
+  if (from > to) throw bad("Дата начала позже даты окончания");
+  const { charges, storage } = invoiceDraft(client, from, to);
+  const lines = groupLines(charges.concat(storage ? [storageLine(storage)] : []));
+  return { lines, total: money(lines.reduce((a, l) => a + l.amount, 0)), storage: storage ? { from: storage.from, to: storage.to, qty: storage.qty } : null };
+});
+route("GET", "/api/billing/invoices", "any", ({ user, url }) => {
+  const client = billingClient(user, url, false);
+  const where = [], args = [];
+  if (client) { where.push("ckey=?"); args.push(norm(client)); }
+  if (user.role === "client") where.push("status<>'cancelled'");
+  return { invoices: db.prepare(`SELECT id, number, client, period_from, period_to, total, status, created, paid FROM invoices${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY id DESC LIMIT 500`).all(...args) };
+});
+route("POST", "/api/billing/invoices", "admin", ({ body, user }) => {
+  const client = str(body.client, 120);
+  if (!client) throw bad("Выберите клиента");
+  const from = parseDay(body.from, "с"), to = parseDay(body.to, "по");
+  if (from > to) throw bad("Дата начала позже даты окончания");
+  const out = tx(() => {
+    const { charges, storage } = invoiceDraft(client, from, to);
+    if (!charges.length && !storage) throw bad("За этот период нет невыставленных услуг");
+    const year = to.slice(0, 4);
+    const seq = db.prepare("SELECT COUNT(*) n FROM invoices WHERE number LIKE ?").get(year + "-%").n + 1;
+    const number = `${year}-${String(seq).padStart(4, "0")}`;
+    const id = Number(db.prepare("INSERT INTO invoices(number,client,ckey,period_from,period_to,user_id,created) VALUES(?,?,?,?,?,?,?)")
+      .run(number, charges[0] ? charges[0].client : client, norm(client), from, to, user.id, now()).lastInsertRowid);
+    const link = db.prepare("UPDATE charges SET invoice_id=? WHERE id=?");
+    for (const c of charges) link.run(id, c.id);
+    if (storage) addCharge(user, client, storage.svc, storage.qty, storage.to, `Хранение с ${storage.from} по ${storage.to}`, { from: storage.from, to: storage.to, invoiceId: id });
+    const total = money(db.prepare("SELECT COALESCE(SUM(amount),0) n FROM charges WHERE invoice_id=?").get(id).n);
+    db.prepare("UPDATE invoices SET total=? WHERE id=?").run(total, id);
+    return { id, number, total };
+  });
+  broadcast(["billing"], [norm(client)]);
+  return { ok: true, ...out };
+});
+route("GET", "/api/billing/invoice", "any", ({ user, url }) => {
+  const inv = B.invById.get(int(url.searchParams.get("id")));
+  if (!inv || (user.role === "client" && (inv.ckey !== norm(user.client) || inv.status === "cancelled"))) throw new HttpError(404, "Счёт не найден");
+  if (!isStaff(user) && user.role !== "client") throw new HttpError(403, "Нет доступа");
+  const charges = db.prepare(`${CHARGE_SELECT} WHERE c.invoice_id=? ORDER BY c.day, c.id`).all(inv.id);
+  const { ckey, user_id, ...pub } = inv;
+  return { invoice: { ...pub, lines: groupLines(charges) }, supplier: getSettings() };
+});
+route("POST", "/api/billing/invoices/status", "admin", ({ body }) => {
+  const inv = B.invById.get(int(body.id));
+  if (!inv) throw bad("Счёт не найден");
+  if (inv.status === "cancelled") throw conflict("Счёт уже отменён");
+  if (body.action === "paid") db.prepare("UPDATE invoices SET status='paid', paid=? WHERE id=?").run(now(), inv.id);
+  else if (body.action === "issued") db.prepare("UPDATE invoices SET status='issued', paid=NULL WHERE id=?").run(inv.id);
+  else if (body.action === "cancel") tx(() => {
+    // посчитанное для счёта хранение удаляем, остальные услуги снова становятся невыставленными
+    db.prepare("DELETE FROM charges WHERE invoice_id=? AND service_id IN (SELECT id FROM services WHERE kind='storage')").run(inv.id);
+    db.prepare("UPDATE charges SET invoice_id=NULL WHERE invoice_id=?").run(inv.id);
+    db.prepare("UPDATE invoices SET status='cancelled' WHERE id=?").run(inv.id);
+  });
+  else throw bad("Неизвестное действие");
+  broadcast(["billing"], [inv.ckey]);
+  return { ok: true };
+});
+route("GET", "/api/billing/summary", "admin", () => {
+  const month = dayOf(now()).slice(0, 8) + "01";
+  const c = db.prepare("SELECT COALESCE(SUM(CASE WHEN invoice_id IS NULL THEN amount END),0) open, COALESCE(SUM(CASE WHEN day>=? THEN amount END),0) month FROM charges").get(month);
+  const unpaid = db.prepare("SELECT COALESCE(SUM(total),0) n FROM invoices WHERE status='issued'").get().n;
+  return { open: money(c.open), month: money(c.month), unpaid: money(unpaid) };
+});
+route("GET", "/api/billing/settings", "admin", () => ({ settings: getSettings() }));
+route("POST", "/api/billing/settings", "admin", ({ body }) => {
+  const up = db.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+  tx(() => { for (const k of SETTINGS_KEYS) if (body[k] != null) up.run(k, str(body[k], 300)); });
   return { ok: true };
 });
 

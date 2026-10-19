@@ -146,7 +146,7 @@ tr.hl td{background:var(--brand-soft)}
 .sticky-foot{position:sticky;bottom:0;padding-bottom:calc(8px + env(safe-area-inset-bottom,0px));background:linear-gradient(to top,var(--bg) 72%,transparent);padding-top:16px;display:flex;gap:8px;flex-wrap:wrap}
 .sticky-foot .btn{flex:1 1 200px;min-height:52px}
 .switch{display:flex;align-items:center;gap:8px;font-size:.9rem;cursor:pointer;font-weight:500}
-.switch input{width:20px;height:20px;min-height:0;accent-color:var(--ink)}
+.switch input,td input[type="checkbox"]{width:20px;height:20px;min-height:0;accent-color:var(--ink)}
 .seg{display:inline-flex;background:var(--tint);border-radius:999px;padding:3px}
 .seg button{border:0;background:transparent;color:var(--ink-2);font:600 .84rem var(--font-body);padding:7px 14px;border-radius:999px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}

@@ -56,7 +56,11 @@ async function fetchParts(parts){
 /* mode: "app" — складской интерфейс, "portal" — кабинет клиента (у клиента всегда, у сотрудника в режиме просмотра) */
 let mode="app";
 const ALL_PARTS=["stock","products","cells","ops","receipts"];
-function reloadAll(parts){if(mode==="portal")loadPortal();else load(parts||ALL_PARTS)}
+function reloadAll(parts){
+  if(mode==="portal"){loadPortal();return}
+  const data=(parts||ALL_PARTS).filter(p=>p!=="billing");if(data.length)load(data);
+  if((tab==="svc"||tab==="bill")&&(!parts||parts.includes("billing")))loadBilling();
+}
 let es=null;
 function connectEvents(){
   if(es)es.close();
@@ -1042,8 +1046,8 @@ $("backupBtn").addEventListener("click",()=>{const a=document.createElement("a")
 /* ======================================================
    КАБИНЕТ КЛИЕНТА
    ====================================================== */
-const P={data:null,client:"",preview:false,tab:"stock"};
-const PT_TABS=["stock","rc","ops","pass"];
+const P={data:null,bill:null,client:"",preview:false,tab:"stock"};
+const PT_TABS=["stock","rc","ops","bill","pass"];
 const PT_OPN={receive:"Поступление",pick:"Отгрузка",inventory:"Инвентаризация",adjust:"Корректировка"};
 const PT_OPC={receive:"ok",pick:"warn",inventory:"bad",adjust:""};
 let ptLoading=null,ptAgain=false;
@@ -1051,20 +1055,20 @@ function ptOffline(){const s=$("ptStatus");s.textContent="Нет связи";s.c
 async function loadPortal(){
   if(ptLoading){ptAgain=true;return ptLoading}
   ptLoading=(async()=>{
-    try{const j=await api("GET","/api/my"+(P.preview?"?client="+encodeURIComponent(P.client):""));P.data=j;renderPortal()}
+    try{const j=await api("GET","/api/my"+(P.preview?"?client="+encodeURIComponent(P.client):""));P.data=j;renderPortal();loadPtBill()}
     catch(e){if(me)ptOffline();if(me&&!P.data)toast(e.message,true)}
     finally{ptLoading=null;if(ptAgain){ptAgain=false;loadPortal()}}
   })();
   return ptLoading;
 }
 function showPortal(previewClient){
-  mode="portal";P.data=null;P.preview=!!previewClient;P.client=previewClient||(me&&me.client)||"";
+  mode="portal";P.data=null;P.bill=null;P.preview=!!previewClient;P.client=previewClient||(me&&me.client)||"";
   $("app").hidden=true;$("login").hidden=true;$("portal").hidden=false;
   $("ptWho").textContent=me.name;
   $("ptPreview").hidden=!P.preview;$("ptPreviewText").textContent=P.preview?`Так кабинет видит клиент «${P.client}»`:"";
   $("ptLogout").hidden=P.preview;$("ptPassTab").hidden=P.preview;
   $("ptClient").textContent=P.client;$("ptUpdated").textContent="";$("ptStatus").textContent="Загрузка…";
-  ["ptStockTable","ptRcList","ptOpsTable","ptKv"].forEach(id=>$(id).innerHTML="");
+  ["ptStockTable","ptRcList","ptOpsTable","ptKv","ptBillList","ptChTable"].forEach(id=>$(id).innerHTML="");
   setPtTab(P.preview&&ls.get("ptTab")==="pass"?"stock":(ls.get("ptTab")||"stock"));
   window.scrollTo(0,0);
   loadPortal();
@@ -1096,7 +1100,7 @@ function renderPortal(){
   let units=0;d.stock.forEach(s=>units+=s.qty);
   $("ptStatus").innerHTML=`<b>${units}</b> шт. на складе`;$("ptStatus").classList.remove("off");$("ptOffline").hidden=true;
   $("ptUpdated").textContent=d.updated?`Остатки на ${fmtTs(d.updated)}, обновляются сами`:"";
-  ({stock:renderPtStock,rc:renderPtRc,ops:renderPtOps,pass:()=>{}})[P.tab]();
+  ({stock:renderPtStock,rc:renderPtRc,ops:renderPtOps,bill:renderPtBill,pass:()=>{}})[P.tab]();
 }
 /* «Всего» = в ячейках + в приёмке; эту же цифру показывает шапка */
 function ptStockRows(){
@@ -1160,21 +1164,200 @@ $("ptPassForm").addEventListener("submit",async e=>{
   catch(err){$("ptPassErr").textContent=err.message}
 });
 
+/* ======================================================
+   УСЛУГИ И СЧЕТА
+   ====================================================== */
+const BL={services:[],charges:[],invoices:[],summary:null,settings:null,draft:null};
+const localDay=(d=new Date())=>d.toLocaleDateString("sv-SE");
+const fmtRub=n=>Number(n||0).toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})+" ₽";
+const fmtQty=n=>Number(n||0).toLocaleString("ru-RU",{maximumFractionDigits:2});
+const fmtDay=s=>s?String(s).slice(0,10).split("-").reverse().join("."):"";
+const INV_ST={issued:["Выставлен","warn"],paid:["Оплачен","ok"],cancelled:["Отменён",""]};
+const invChip=s=>{const[t,c]=INV_ST[s]||[s,""];return`<span class="chip ${c}">${t}</span>`};
+let blLoading=null,blAgain=false;
+async function loadBilling(){
+  if(blLoading){blAgain=true;return blLoading}
+  blLoading=(async()=>{
+    try{
+      const c=$("chfClient").value,qs=new URLSearchParams();if(c)qs.set("client",c);if($("chOpen").checked)qs.set("open","1");
+      const[s,ch,inv,sum,set]=await Promise.all([api("GET","/api/billing/services"),api("GET","/api/billing/charges?"+qs),
+        isAdmin()?api("GET","/api/billing/invoices"):null,isAdmin()?api("GET","/api/billing/summary"):null,isAdmin()&&!BL.settings?api("GET","/api/billing/settings"):null]);
+      BL.services=s.services;BL.charges=ch.charges;if(inv)BL.invoices=inv.invoices;if(sum)BL.summary=sum;if(set){BL.settings=set.settings;fillReq()}
+      if(tab==="svc")renderSvc();if(tab==="bill")renderBill();
+    }catch(e){fail(e.message)}
+    finally{blLoading=null;if(blAgain){blAgain=false;loadBilling()}}
+  })();
+  return blLoading;
+}
+function clientOptions(sel,withAll){const prev=sel.value;sel.innerHTML=(withAll?`<option value="">Все клиенты</option>`:"")+clients().map(c=>`<option${c===prev?" selected":""}>${esc(c)}</option>`).join("")||`<option value="">Клиентов пока нет</option>`}
+function renderSvc(){
+  const sel=$("chService"),prev=sel.value;
+  sel.innerHTML=BL.services.filter(s=>s.active&&s.kind!=="storage").map(s=>`<option value="${s.id}"${String(s.id)===prev?" selected":""}>${esc(s.name)} · ${fmtRub(s.price)}/${esc(s.unit)}</option>`).join("");
+  if(!$("chDay").value)$("chDay").value=localDay();
+  clientOptions($("chfClient"),true);
+  const rows=BL.charges,total=rows.reduce((a,c)=>a+c.amount,0),open=rows.filter(c=>!c.invoice_id).reduce((a,c)=>a+c.amount,0);
+  $("chKv").innerHTML=`<div><span>Начислений</span><b>${rows.length}</b></div><div><span>На сумму</span><b>${fmtRub(total)}</b></div><div><span>Не выставлено в счёт</span><b>${fmtRub(open)}</b></div>`;
+  const box=$("chTable");
+  if(!rows.length){box.innerHTML=`<div class="empty"><b>Начислений нет</b>Они появятся после приёмки, сборки или когда вы добавите услугу вручную.</div>`;return}
+  box.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Дата</th><th>Клиент</th><th>Услуга</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">Сумма</th><th>Комментарий</th><th>Счёт</th>${isAdmin()?"<th></th>":""}</tr></thead><tbody>${rows.map(c=>`<tr>
+    <td class="mono" style="white-space:nowrap">${fmtDay(c.day)}</td><td>${esc(c.client)}</td><td>${esc(c.service)}</td>
+    <td class="num mono">${fmtQty(c.qty)} ${esc(c.unit)}</td><td class="num mono">${fmtRub(c.price)}</td><td class="num mono"><b>${fmtRub(c.amount)}</b></td>
+    <td class="wrap-any hint">${esc(c.note)}${c.user_name?` · ${esc(c.user_name)}`:""}</td>
+    <td>${c.invoice_number?`<span class="mono">№ ${esc(c.invoice_number)}</span>`:'<span class="chip warn">не выставлено</span>'}</td>
+    ${isAdmin()?`<td class="num">${c.invoice_id?"":`<button class="btn sm ghost" type="button" data-chdel="${c.id}">Удалить</button>`}</td>`:""}</tr>`).join("")}</tbody></table></div>`;
+}
+$("chForm").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const body={client:$("chClient").value.trim(),service_id:$("chService").value,qty:$("chQty").value,day:$("chDay").value,note:$("chNote").value.trim()};
+  if(!clients().some(c=>norm(c)===norm(body.client))&&!$("chForm").dataset.confirm){const sim=similarClient(body.client);$("chForm").dataset.confirm="1";
+    fail(sim?`Клиента «${body.client}» нет, но есть похожий: «${sim}». Выберите его или нажмите «Добавить» ещё раз.`:`Клиента «${body.client}» на складе нет. Проверьте написание или нажмите «Добавить» ещё раз.`);return}
+  delete $("chForm").dataset.confirm;
+  const res=await run(e.submitter,"Добавляю…",()=>api("POST","/api/billing/charges",body));
+  if(res){okb("Услуга добавлена");$("chNote").value="";$("chQty").value="1";loadBilling()}
+});
+$("chClient").addEventListener("input",()=>delete $("chForm").dataset.confirm);
+["chfClient","chOpen"].forEach(id=>$(id).addEventListener("change",loadBilling));
+$("chTable").addEventListener("click",async e=>{const b=e.target.closest("[data-chdel]");if(!b)return;
+  if(!b.dataset.confirm){b.dataset.confirm="1";b.textContent="Точно удалить?";return}
+  const res=await run(b,"Удаляю…",()=>api("POST","/api/billing/charges/delete",{id:+b.dataset.chdel}));if(res){okb("Начисление удалено");loadBilling()}});
+$("chExport").addEventListener("click",()=>saveXlsx(`uslugi-${today()}.xlsx`,[["Дата","Клиент","Услуга","Количество","Ед.","Цена","Сумма","Комментарий","Счёт"],
+  ...BL.charges.map(c=>[fmtDay(c.day),c.client,c.service,c.qty,c.unit,c.price,c.amount,c.note,c.invoice_number||"не выставлено"])],"Услуги"));
+
+function linesTable(lines,total){
+  return`<div class="table-wrap"><table><thead><tr><th>Услуга</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">Сумма</th></tr></thead><tbody>${lines.map(l=>`<tr>
+    <td>${esc(l.service)}</td><td class="num mono">${fmtQty(l.qty)} ${esc(l.unit)}</td><td class="num mono">${fmtRub(l.price)}</td><td class="num mono">${fmtRub(l.amount)}</td></tr>`).join("")}
+    <tr><td colspan="3"><b>Итого</b></td><td class="num mono"><b>${fmtRub(total)}</b></td></tr></tbody></table></div>`;
+}
+function renderBill(){
+  const s=BL.summary;
+  $("billKv").innerHTML=s?`<div><span>Услуг за этот месяц</span><b>${fmtRub(s.month)}</b></div><div><span>Ждёт оплаты</span><b>${fmtRub(s.unpaid)}</b></div><div><span>Ещё не выставлено</span><b>${fmtRub(s.open)}</b></div>`:"";
+  clientOptions($("biClient"));clientOptions($("cpClient"));
+  if(!$("biFrom").value){const d=new Date();$("biFrom").value=localDay(new Date(d.getFullYear(),d.getMonth(),1));$("biTo").value=localDay(d)}
+  const box=$("biTable"),list=BL.invoices;
+  box.innerHTML=list.length?`<div class="table-wrap"><table><thead><tr><th>№</th><th>Клиент</th><th>Период</th><th class="num">Сумма</th><th>Статус</th><th></th></tr></thead><tbody>${list.map(i=>`<tr data-inv="${i.id}"${i.status==="cancelled"?' style="opacity:.55"':""}>
+    <td class="mono">${esc(i.number)}</td><td>${esc(i.client)}</td><td class="mono" style="white-space:nowrap">${fmtDay(i.period_from)} — ${fmtDay(i.period_to)}</td>
+    <td class="num mono"><b>${fmtRub(i.total)}</b></td><td>${invChip(i.status)}</td>
+    <td class="num"><span class="row" style="flex-wrap:nowrap;justify-content:flex-end"><button class="btn sm" type="button" data-print>Печать</button>${i.status==="issued"?`<button class="btn sm" type="button" data-st="paid">Оплачен</button><button class="btn sm ghost" type="button" data-st="cancel">Отменить</button>`:i.status==="paid"?`<button class="btn sm ghost" type="button" data-st="issued">Не оплачен</button>`:""}</span></td></tr>`).join("")}</tbody></table></div>`
+    :`<div class="empty"><b>Счетов пока нет</b>Выберите клиента и период выше и нажмите «Посчитать».</div>`;
+  const tf=$("tfTable"),KIND={receive:"сама при приёмке",pick:"сама при сборке",storage:"по дням в счёте",manual:"вручную"};
+  tf.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Услуга</th><th>Ед.</th><th class="num">Цена, ₽</th><th>Начисляется</th><th>Активна</th><th></th></tr></thead><tbody>${BL.services.map(s=>`<tr data-svc="${s.id}">
+    <td><input data-f="name" value="${esc(s.name)}" style="min-width:170px;min-height:36px;padding:4px 8px"></td>
+    <td><input data-f="unit" value="${esc(s.unit)}" style="width:80px;min-height:36px;padding:4px 8px"></td>
+    <td class="num"><input data-f="price" type="number" min="0" step="any" value="${s.price}" style="width:100px;min-height:36px;padding:4px 8px"></td>
+    <td class="hint">${KIND[s.kind]||esc(s.kind)}</td><td><input data-f="active" type="checkbox"${s.active?" checked":""}></td>
+    <td class="num"><button class="btn sm" type="button" data-save>Сохранить</button></td></tr>`).join("")}</tbody></table></div>`;
+  loadClientPrices();
+}
+async function loadClientPrices(){
+  const c=$("cpClient").value,box=$("cpTable");
+  if(!c){box.innerHTML="";return}
+  try{const{prices}=await api("GET","/api/billing/prices?client="+encodeURIComponent(c));
+    box.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Услуга</th><th class="num">По умолчанию</th><th class="num">Для клиента, ₽</th><th></th></tr></thead><tbody>${prices.map(p=>`<tr data-cp="${p.service_id}">
+      <td>${esc(p.name)} <span class="hint">(${esc(p.unit)})</span></td><td class="num mono">${fmtRub(p.default_price)}</td>
+      <td class="num"><input type="number" min="0" step="any" value="${p.client_price??""}" placeholder="как у всех" style="width:120px;min-height:36px;padding:4px 8px"></td>
+      <td class="num"><button class="btn sm" type="button">Сохранить</button></td></tr>`).join("")}</tbody></table></div>`}
+  catch(e){fail(e.message)}
+}
+$("cpClient").addEventListener("change",loadClientPrices);
+$("cpTable").addEventListener("click",async e=>{const b=e.target.closest("button");const tr=e.target.closest("tr[data-cp]");if(!b||!tr)return;
+  const res=await run(b,"…",()=>api("POST","/api/billing/prices",{client:$("cpClient").value,service_id:+tr.dataset.cp,price:tr.querySelector("input").value}));if(res)okb("Цена для клиента сохранена")});
+$("tfTable").addEventListener("click",async e=>{const b=e.target.closest("[data-save]");if(!b)return;const tr=b.closest("tr");const f=n=>tr.querySelector(`[data-f="${n}"]`);
+  const res=await run(b,"…",()=>api("POST","/api/billing/services/update",{id:+tr.dataset.svc,name:f("name").value,unit:f("unit").value,price:f("price").value,active:f("active").checked}));
+  if(res){okb("Тариф сохранён");loadBilling()}});
+$("tfForm").addEventListener("submit",async e=>{e.preventDefault();
+  const res=await run(e.submitter,"Добавляю…",()=>api("POST","/api/billing/services",{name:$("tfName").value,unit:$("tfUnit").value,price:$("tfPrice").value}));
+  if(res){okb("Услуга добавлена в тарифы");$("tfName").value="";$("tfPrice").value="";loadBilling()}});
+function fillReq(){document.querySelectorAll("[data-req]").forEach(i=>i.value=(BL.settings||{})[i.dataset.req]||"")}
+$("reqForm").addEventListener("submit",async e=>{e.preventDefault();const body={};document.querySelectorAll("[data-req]").forEach(i=>body[i.dataset.req]=i.value.trim());
+  const res=await run(e.submitter,"Сохраняю…",()=>api("POST","/api/billing/settings",body));if(res){BL.settings=body;okb("Реквизиты сохранены")}});
+const biParams=()=>({client:$("biClient").value,from:$("biFrom").value,to:$("biTo").value});
+$("biPreview").addEventListener("click",async e=>{
+  const p=biParams();if(!p.client){fail("Выберите клиента");return}
+  const res=await run(e.currentTarget,"Считаю…",()=>api("GET","/api/billing/preview?"+new URLSearchParams(p)));
+  if(!res)return;BL.draft={...p,total:res.total};
+  $("biDraft").innerHTML=res.lines.length?`${linesTable(res.lines,res.total)}${res.storage?`<p class="hint">Хранение с ${fmtDay(res.storage.from)} по ${fmtDay(res.storage.to)}: ${fmtQty(res.storage.qty)} шт·сут.</p>`:""}
+    <button class="btn primary" type="button" id="biCreate" style="align-self:flex-start">Выставить счёт на ${fmtRub(res.total)}</button>`
+    :`<p class="hint">За этот период у «${esc(p.client)}» нет невыставленных услуг.</p>`;
+});
+$("biDraft").addEventListener("click",async e=>{if(e.target.id!=="biCreate"||!BL.draft)return;
+  const res=await run(e.target,"Выставляю…",()=>api("POST","/api/billing/invoices",BL.draft));
+  if(res){okb(`Счёт № ${res.number} на ${fmtRub(res.total)} выставлен`);$("biDraft").innerHTML="";BL.draft=null;await loadBilling();printInvoice(res.id)}});
+["biClient","biFrom","biTo"].forEach(id=>$(id).addEventListener("change",()=>{$("biDraft").innerHTML="";BL.draft=null}));
+$("biTable").addEventListener("click",async e=>{const tr=e.target.closest("tr[data-inv]");if(!tr)return;const id=+tr.dataset.inv;
+  if(e.target.closest("[data-print]")){printInvoice(id);return}
+  const b=e.target.closest("[data-st]");if(!b)return;
+  if(b.dataset.st==="cancel"&&!b.dataset.confirm){b.dataset.confirm="1";b.textContent="Точно отменить?";return}
+  const res=await run(b,"…",()=>api("POST","/api/billing/invoices/status",{id,action:b.dataset.st}));
+  if(res){okb({paid:"Счёт отмечен оплаченным",cancel:"Счёт отменён, услуги снова можно выставить",issued:"Счёт снова ждёт оплаты"}[b.dataset.st]);loadBilling()}});
+
+function rublesInWords(amount){
+  const ones=[["","один","два","три","четыре","пять","шесть","семь","восемь","девять"],["","одна","две","три","четыре","пять","шесть","семь","восемь","девять"]];
+  const teens=["десять","одиннадцать","двенадцать","тринадцать","четырнадцать","пятнадцать","шестнадцать","семнадцать","восемнадцать","девятнадцать"];
+  const tens=["","","двадцать","тридцать","сорок","пятьдесят","шестьдесят","семьдесят","восемьдесят","девяносто"];
+  const hund=["","сто","двести","триста","четыреста","пятьсот","шестьсот","семьсот","восемьсот","девятьсот"];
+  const triad=(n,fem)=>{const w=[hund[Math.floor(n/100)]],r=n%100;if(r>=10&&r<20)w.push(teens[r-10]);else w.push(tens[Math.floor(r/10)],ones[fem?1:0][r%10]);return w.filter(Boolean).join(" ")};
+  const groups=[[0,["рубль","рубля","рублей"]],[1,["тысяча","тысячи","тысяч"]],[0,["миллион","миллиона","миллионов"]],[0,["миллиард","миллиарда","миллиардов"]]];
+  const cents=Math.round(Number(amount)*100);let rub=Math.floor(cents/100);const kop=cents%100,whole=rub,parts=[];
+  if(!rub)parts.push("ноль");
+  for(let i=0;rub>0&&i<groups.length;i++){const n=rub%1000;if(n)parts.unshift(i?`${triad(n,groups[i][0])} ${plural(n,...groups[i][1])}`:triad(n,false));rub=Math.floor(rub/1000)}
+  const t=`${parts.join(" ")} ${plural(whole,...groups[0][1])} ${String(kop).padStart(2,"0")} ${plural(kop,"копейка","копейки","копеек")}`.replace(/\s+/g," ").trim();
+  return t.charAt(0).toUpperCase()+t.slice(1);
+}
+async function printInvoice(id){
+  let j;try{j=await api("GET","/api/billing/invoice?id="+id)}catch(e){fail(e.message);return}
+  const i=j.invoice,s=j.supplier||{},row=(k,v)=>v?`<div><span>${k}:</span> ${esc(v)}</div>`:"";
+  printHtml(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Счёт № ${esc(i.number)}</title><style>
+    body{font:13px/1.45 Arial,sans-serif;color:#000;margin:18mm 14mm}h1{font-size:19px;border-bottom:2px solid #000;padding-bottom:6px;margin:0 0 12px}
+    .p{margin:8px 0}.p span{color:#555}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #000;padding:5px 7px;text-align:left}
+    th{background:#eee}td.n{text-align:right;white-space:nowrap}.st{color:#b00;font-weight:bold}.sign{margin-top:40px}</style></head><body>
+    <h1>Счёт № ${esc(i.number)} от ${fmtDay(i.created&&localDay(new Date(i.created)))}</h1>
+    ${i.status!=="issued"?`<p class="st">${INV_ST[i.status][0]}</p>`:""}
+    <div class="p"><b>Исполнитель:</b> ${esc(s.company_name||"склад «Дело в коробке»")}${row("ИНН",s.company_inn)}${row("Адрес",s.company_address)}${row("Банк",s.bank_name)}${row("БИК",s.bank_bik)}${row("Р/с",s.bank_account)}${row("К/с",s.bank_corr_account)}</div>
+    <div class="p"><b>Заказчик:</b> ${esc(i.client)}</div>
+    <div class="p"><b>Основание:</b> услуги фулфилмента за период ${fmtDay(i.period_from)} — ${fmtDay(i.period_to)}</div>
+    <table><thead><tr><th>№</th><th>Услуга</th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Сумма</th></tr></thead><tbody>
+    ${i.lines.map((l,n)=>`<tr><td>${n+1}</td><td>${esc(l.service)}</td><td class="n">${fmtQty(l.qty)}</td><td>${esc(l.unit)}</td><td class="n">${fmtRub(l.price)}</td><td class="n">${fmtRub(l.amount)}</td></tr>`).join("")}
+    <tr><td colspan="5"><b>Итого</b></td><td class="n"><b>${fmtRub(i.total)}</b></td></tr></tbody></table>
+    <p>Всего наименований ${i.lines.length}, на сумму ${fmtRub(i.total)}. ${esc(s.vat_note||"")}<br><b>${esc(rublesInWords(i.total))}</b></p>
+    <div class="sign">Исполнитель ____________________</div></body></html>`);
+}
+
+/* кабинет клиента: счета и услуги, ещё не вошедшие в счёт */
+async function loadPtBill(){
+  const qs=P.preview?"?client="+encodeURIComponent(P.client):"";
+  try{const[inv,ch]=await Promise.all([api("GET","/api/billing/invoices"+qs),api("GET","/api/billing/charges"+(qs?qs+"&":"?")+"open=1")]);P.bill={invoices:inv.invoices,charges:ch.charges};if(P.tab==="bill")renderPtBill()}
+  catch(e){if(me&&!P.bill)toast(e.message,true)}
+}
+function renderPtBill(){
+  const b=P.bill;if(!b){$("ptBillList").innerHTML=`<p class="hint">Загружаю…</p>`;$("ptChTable").innerHTML="";return}
+  $("ptBillList").innerHTML=b.invoices.length?`<div class="table-wrap"><table class="pt-table"><thead><tr><th>№</th><th>Период</th><th class="num">Сумма</th><th>Статус</th><th></th></tr></thead><tbody>${b.invoices.map(i=>`<tr>
+    <td class="mono">${esc(i.number)}</td><td class="mono">${fmtDay(i.period_from)} — ${fmtDay(i.period_to)}</td><td class="num mono"><b>${fmtRub(i.total)}</b></td><td>${invChip(i.status)}</td>
+    <td class="num"><button class="btn sm" type="button" data-ptinv="${i.id}">Счёт</button></td></tr>`).join("")}</tbody></table></div>`
+    :`<p class="hint">Счетов пока нет.</p>`;
+  const rows=b.charges,total=rows.reduce((a,c)=>a+c.amount,0);
+  $("ptChTable").innerHTML=rows.length?`<div class="table-wrap"><table class="pt-table"><thead><tr><th>Дата</th><th>Услуга</th><th class="num">Кол-во</th><th class="num">Сумма</th><th>Комментарий</th></tr></thead><tbody>${rows.map(c=>`<tr>
+    <td class="mono">${fmtDay(c.day)}</td><td>${esc(c.service)}</td><td class="num mono">${fmtQty(c.qty)} ${esc(c.unit)}</td><td class="num mono">${fmtRub(c.amount)}</td><td class="wrap-any hint">${esc(c.note)}</td></tr>`).join("")}
+    <tr><td colspan="3"><b>Итого без хранения</b></td><td class="num mono"><b>${fmtRub(total)}</b></td><td></td></tr></tbody></table></div>`
+    :`<p class="hint">Новых услуг пока нет.</p>`;
+}
+$("ptBillList").addEventListener("click",e=>{const b=e.target.closest("[data-ptinv]");if(b)printInvoice(+b.dataset.ptinv)});
+
 /* ---------- вкладки ---------- */
-const TABS=["rc","mv","pick","inv","stock","prod","cells","log","admin"];
+const TABS=["rc","mv","pick","inv","stock","prod","cells","log","svc","bill","admin"];
 function setTab(name){
-  if(!TABS.includes(name)||(name==="admin"&&!isAdmin()))name="rc";tab=name;
+  if(!TABS.includes(name)||((name==="admin"||name==="bill")&&!isAdmin()))name="rc";tab=name;
   [...$("tabs").children].forEach(b=>b.setAttribute("aria-selected",String(b.dataset.tab===name)));
   TABS.forEach(n=>$("view-"+n).hidden=n!==name);
   ls.set("tab",name);renderActive();
   if(name==="admin")loadUsers();
+  if(name==="svc"||name==="bill")loadBilling();
   const sc={rc:"rcScan",mv:"mvScan",inv:"invScan",pick:plan?"pkScan":null}[name];
   if(sc&&window.matchMedia("(pointer:fine)").matches)setTimeout(()=>$(sc).focus(),0);
   const b=$("tabs").querySelector(`[data-tab="${name}"]`);b&&b.scrollIntoView({inline:"nearest",block:"nearest"});
 }
 $("tabs").addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b)setTab(b.dataset.tab)});
 function renderActive(){
-  ({rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,admin:renderUsers})[tab]();
+  ({rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,svc:renderSvc,bill:renderBill,admin:renderUsers})[tab]();
 }
 function setStatus(off){
   let units=0;const cells=new Set();D.stock.forEach(r=>{units+=r.qty;cells.add(r.cell)});
@@ -1187,7 +1370,10 @@ function refresh(){clearTimeout(rT);rT=setTimeout(()=>{setStatus(false);renderCl
 /* ---------- вход ---------- */
 let setupMode=false;
 function showLogin(needSetup){
-  me=null;mode="app";P.data=null;if(es){es.close();es=null}
+  me=null;mode="app";P.data=null;P.bill=null;if(es){es.close();es=null}
+  Object.assign(BL,{services:[],charges:[],invoices:[],summary:null,settings:null,draft:null});fillReq();
+  ["chTable","chKv","billKv","biDraft","biTable","tfTable","cpTable","ptBillList","ptChTable"].forEach(id=>$(id).innerHTML="");
+  ["chService","chfClient","biClient","cpClient"].forEach(id=>$(id).innerHTML="");
   // на общем телефоне или ТСД следующий вошедший (например, клиент) не должен получить данные предыдущего
   D.stock=new Map();D.products=new Map();D.pidx=new Map();D.cells=new Set();D.ops=[];D.receipts=[];users=[];live=false;pendingClient.clear();
   ["stockTable","lTable","uTable","pTable","cTable","rcHist","clientList","pvClient","stockKv","mvTable","invTable","rcTable","ptStockTable","ptRcList","ptOpsTable","ptKv"].forEach(id=>$(id).innerHTML="");

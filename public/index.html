@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Склад">
-<link rel="stylesheet" href="app.css?v=1.1.1">
+<link rel="stylesheet" href="app.css?v=1.2.0">
 </head>
 <body>
 
@@ -61,6 +61,8 @@
     <button role="tab" data-tab="prod" type="button">Товары</button>
     <button role="tab" data-tab="cells" type="button">Ячейки</button>
     <button role="tab" data-tab="log" type="button">Журнал</button>
+    <button role="tab" data-tab="svc" type="button">Услуги</button>
+    <button role="tab" data-tab="bill" type="button" class="admin-only">Счета</button>
     <button role="tab" data-tab="admin" type="button" class="admin-only">Управление</button>
   </nav>
 
@@ -349,6 +351,86 @@
     </div>
   </section>
 
+  <!-- ============ УСЛУГИ ============ -->
+  <section class="view" id="view-svc" hidden>
+    <div class="panel">
+      <h2>Добавить услугу</h2>
+      <form id="chForm" class="row" autocomplete="off">
+        <label class="f">Клиент<input id="chClient" list="clientList" required></label>
+        <label class="f">Услуга<select id="chService" required></select></label>
+        <label class="f narrow">Кол-во<input id="chQty" type="number" min="0" step="any" value="1" required></label>
+        <label class="f narrow" style="flex-basis:150px">Дата<input id="chDay" type="date" required></label>
+        <label class="f">Комментарий<input id="chNote" placeholder="например, упаковка поставки на WB"></label>
+        <button class="btn primary" type="submit" style="align-self:flex-end">Добавить</button>
+      </form>
+      <p class="hint">Приёмка и сборка начисляются сами при каждой операции, хранение считается по дням при выставлении счёта. Здесь добавляют всё остальное: упаковку, маркировку, доставку.</p>
+    </div>
+    <div class="panel">
+      <div class="row">
+        <select id="chfClient" style="flex:1 1 200px"></select>
+        <label class="switch"><input type="checkbox" id="chOpen" checked> Только не выставленные в счёт</label>
+        <button class="btn sm" id="chExport" type="button">Выгрузить</button>
+      </div>
+      <div class="kv" id="chKv"></div>
+      <div id="chTable"></div>
+      <p class="hint">Показаны последние 1000 начислений.</p>
+    </div>
+  </section>
+
+  <!-- ============ СЧЕТА ============ -->
+  <section class="view" id="view-bill" hidden>
+    <div class="kv" id="billKv"></div>
+    <div class="panel">
+      <h2>Выставить счёт</h2>
+      <div class="row">
+        <select id="biClient" style="flex:1 1 220px"></select>
+        <label class="f narrow" style="flex-basis:150px">С<input id="biFrom" type="date"></label>
+        <label class="f narrow" style="flex-basis:150px">По<input id="biTo" type="date"></label>
+        <button class="btn" id="biPreview" type="button" style="align-self:flex-end">Посчитать</button>
+      </div>
+      <div id="biDraft"></div>
+    </div>
+    <div class="panel">
+      <h2>Счета</h2>
+      <div id="biTable"></div>
+    </div>
+    <div class="panel">
+      <h2>Тарифы</h2>
+      <p class="hint">Цены по умолчанию для всех клиентов. Стартовые цены примерные — поставьте свои.</p>
+      <div id="tfTable"></div>
+      <form id="tfForm" class="row" autocomplete="off">
+        <label class="f">Новая услуга<input id="tfName" placeholder="например, Фото товара" required></label>
+        <label class="f narrow">Ед.<input id="tfUnit" value="шт"></label>
+        <label class="f narrow">Цена, ₽<input id="tfPrice" type="number" min="0" step="any" required></label>
+        <button class="btn" type="submit" style="align-self:flex-end">Добавить</button>
+      </form>
+    </div>
+    <div class="panel">
+      <h2>Цены для клиента</h2>
+      <p class="hint">Пустое поле — действует цена по умолчанию. Новая цена применяется к услугам, оказанным после сохранения.</p>
+      <select id="cpClient" style="max-width:320px"></select>
+      <div id="cpTable"></div>
+    </div>
+    <form class="panel" id="reqForm" autocomplete="off">
+      <h2>Реквизиты для счетов</h2>
+      <div class="row">
+        <label class="f">Название (ИП / ООО)<input data-req="company_name"></label>
+        <label class="f">ИНН<input data-req="company_inn" class="mono"></label>
+      </div>
+      <label class="f">Адрес<input data-req="company_address"></label>
+      <div class="row">
+        <label class="f">Банк<input data-req="bank_name"></label>
+        <label class="f">БИК<input data-req="bank_bik" class="mono"></label>
+      </div>
+      <div class="row">
+        <label class="f">Расчётный счёт<input data-req="bank_account" class="mono"></label>
+        <label class="f">Корр. счёт<input data-req="bank_corr_account" class="mono"></label>
+        <label class="f">НДС (строка в счёте)<input data-req="vat_note"></label>
+      </div>
+      <button class="btn primary" type="submit" style="align-self:flex-start">Сохранить реквизиты</button>
+    </form>
+  </section>
+
   <!-- ============ УПРАВЛЕНИЕ ============ -->
   <section class="view" id="view-admin" hidden>
     <div class="panel">
@@ -407,6 +489,7 @@
     <button role="tab" data-pt="stock" type="button">Остатки</button>
     <button role="tab" data-pt="rc" type="button">Поставки</button>
     <button role="tab" data-pt="ops" type="button">Движение товара</button>
+    <button role="tab" data-pt="bill" type="button">Счета</button>
     <button role="tab" data-pt="pass" type="button" id="ptPassTab">Пароль</button>
   </nav>
 
@@ -444,6 +527,18 @@
     </div>
   </section>
 
+  <section class="view" id="pt-bill" hidden>
+    <div class="panel">
+      <h2>Счета</h2>
+      <div id="ptBillList"></div>
+    </div>
+    <div class="panel">
+      <h2>Услуги, ещё не вошедшие в счёт</h2>
+      <div id="ptChTable"></div>
+      <p class="hint">Хранение добавляется в счёт по дням, по остаткам на конец каждых суток.</p>
+    </div>
+  </section>
+
   <section class="view" id="pt-pass" hidden>
     <form class="panel" id="ptPassForm" autocomplete="off" style="max-width:480px">
       <h2>Сменить пароль</h2>
@@ -462,17 +557,10 @@
   <div class="cam-top"><b id="camTitle">Сканирование</b><button class="btn sm" type="button" id="camClose">Готово</button></div>
   <div class="cam-wrap"><video id="camVideo" playsinline muted></video><div class="cam-frame"></div></div>
   <div class="cam-bot">
-    <p class="cam-status" id="camStatus" role="status"></p>
-    <span class="cam-last" id="camLast"></span>
-    <div class="cam-actions">
-      <button class="btn sm" type="button" id="camSwitch" hidden>Другая камера</button>
-      <button class="btn sm" type="button" id="camTorch" hidden>Фонарик</button>
-      <button class="btn sm" type="button" id="camPhotoBtn">Сфотографировать</button>
-    </div>
+    <span class="cam-last" id="camLast">Наведите камеру на штрихкод</span>
     <label class="switch"><input type="checkbox" id="camCont" checked> Сканировать подряд</label>
   </div>
 </div>
-<input type="file" id="camPhoto" accept="image/*" capture="environment" hidden>
 
 <datalist id="clientList"></datalist>
 <div id="toast" hidden></div>
@@ -480,6 +568,6 @@
 <script src="vendor/xlsx.full.min.js" defer></script>
 <script src="vendor/JsBarcode.all.min.js" defer></script>
 <script src="vendor/zxing.min.js" defer></script>
-<script src="app.js?v=1.1.1" defer></script>
+<script src="app.js?v=1.2.0" defer></script>
 </body>
 </html>
