@@ -557,10 +557,17 @@
   <div class="cam-top"><b id="camTitle">Сканирование</b><button class="btn sm" type="button" id="camClose">Готово</button></div>
   <div class="cam-wrap"><video id="camVideo" playsinline muted></video><div class="cam-frame"></div></div>
   <div class="cam-bot">
-    <span class="cam-last" id="camLast">Наведите камеру на штрихкод</span>
+    <p class="cam-status" id="camStatus" role="status"></p>
+    <span class="cam-last" id="camLast"></span>
+    <div class="cam-actions">
+      <button class="btn sm" type="button" id="camSwitch" hidden>Другая камера</button>
+      <button class="btn sm" type="button" id="camTorch" hidden>Фонарик</button>
+      <button class="btn sm" type="button" id="camPhotoBtn">Сфотографировать</button>
+    </div>
     <label class="switch"><input type="checkbox" id="camCont" checked> Сканировать подряд</label>
   </div>
 </div>
+<input type="file" id="camPhoto" accept="image/*" capture="environment" hidden>
 
 <datalist id="clientList"></datalist>
 <div id="toast" hidden></div>
