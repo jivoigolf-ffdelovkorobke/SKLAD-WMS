@@ -198,6 +198,10 @@ body:not([data-role="admin"]) .admin-only{display:none!important}
 .cam-frame{position:absolute;left:12%;right:12%;top:38%;height:22%;border:3px solid #FFC800;border-radius:16px;box-shadow:0 0 0 100vmax rgba(0,0,0,.35);pointer-events:none}
 .cam-wrap{position:relative;flex:1;min-height:0;display:flex}
 .cam-ov .switch{color:#FFFFFF}
+.cam-status{margin:0;width:100%;font-size:.92rem;color:#FFFFFF}
+.cam-status.bad{color:#FFB4A8}
+.cam-last:empty{display:none}
+.cam-actions{display:flex;gap:8px;flex-wrap:wrap}
 .cam-ov .btn{background:#FFFFFF;color:#16181D;box-shadow:none}
 .offline{background:var(--bad-bg);color:var(--bad);border-radius:var(--r-sm);padding:8px 14px;font-size:.88rem;font-weight:500;margin-top:12px}
 .rc-hist{display:flex;flex-direction:column;gap:6px}

@@ -116,27 +116,98 @@ function bindScan(inputId,btnId,handler){
 /* ---------- камера ---------- */
 const CAM_ICON=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><path d="M7 8v8M10 8v8M13 8v8M16 8v8"/></svg>`;
 document.querySelectorAll("[data-cam]").forEach(b=>{b.innerHTML=CAM_ICON;b.addEventListener("click",()=>openCam(b.dataset.cam))});
-const cam={stream:null,reader:null,timer:null,handler:null,last:"",lastT:0};
+/* Поток с камеры берём сами и раз в 150 мс копируем кадр на canvas: по нему распознаём штрихкод
+   (BarcodeDetector в Chrome/Android, ZXing в Safari и остальных) и замечаем чёрную картинку.
+   Чёрный экран на телефонах обычно значит, что браузер выбрал не ту заднюю камеру (широкоугольную,
+   макро, датчик глубины) — тогда помогает «Другая камера». Если живое видео недоступно совсем
+   (встроенный браузер Telegram/WhatsApp, старый телефон), работает «Сфотографировать». */
+const cam={stream:null,timer:null,handler:null,last:"",lastT:0,det:null,zx:null,devices:[],deviceId:"",canvas:null,ctx:null,n:0,dark:0,noFrame:0,warn:false,torch:false};
 try{const c=ls.get("camCont");if(c===false)$("camCont").checked=false}catch(e){}
 $("camCont").addEventListener("change",e=>ls.set("camCont",e.target.checked));
 const CAM_TITLES={rcScan:"Приёмка",mvScan:"Размещение",pkScan:"Сборка",invScan:"Инвентаризация"};
+const CAM_FORMATS=["ean_13","ean_8","code_128","code_39","code_93","upc_a","upc_e","itf","qr_code","data_matrix","codabar"];
+const IN_APP=/Telegram|WhatsApp|Instagram|FBAN|FBAV|VKClient|; wv\)/i.test(navigator.userAgent);
+function camStatus(text,bad){const s=$("camStatus");s.textContent=text||"";s.classList.toggle("bad",!!bad);cam.warn=!!bad}
+async function camDecoder(){
+  if(cam.det||cam.zx)return true;
+  if("BarcodeDetector" in window){try{const f=await BarcodeDetector.getSupportedFormats();const want=CAM_FORMATS.filter(x=>f.includes(x));if(want.length)cam.det=new BarcodeDetector({formats:want})}catch(e){}}
+  if(!cam.det&&window.ZXing&&ZXing.MultiFormatReader){const hints=new Map();hints.set(ZXing.DecodeHintType.TRY_HARDER,true);cam.zx=new ZXing.MultiFormatReader();cam.zx.setHints(hints)}
+  return !!(cam.det||cam.zx);
+}
+async function decodeCanvas(c){
+  if(cam.det){try{const r=await cam.det.detect(c);return r.length?r[0].rawValue:null}catch(e){return null}}
+  if(cam.zx){try{return cam.zx.decodeWithState(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(c)))).getText()}catch(e){return null}}
+  return null;
+}
+function camErrorText(e){
+  const n=e&&e.name;
+  if(n==="NotAllowedError"||n==="SecurityError")return"Нет доступа к камере. Нажмите на значок замка в адресной строке, разрешите камеру для этого сайта и откройте сканер снова.";
+  if(n==="NotReadableError"||n==="AbortError")return"Камера занята другим приложением. Закройте его и попробуйте снова.";
+  if(n==="NotFoundError"||n==="OverconstrainedError")return"Камера не найдена.";
+  return(e&&e.message)||"Камера недоступна.";
+}
+function camStopStream(){
+  clearTimeout(cam.timer);
+  if(cam.stream){cam.stream.getTracks().forEach(t=>t.stop());cam.stream=null}
+  const v=$("camVideo");try{v.pause()}catch(e){}v.srcObject=null;
+}
 async function openCam(inputId){
-  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){fail("Камера недоступна. Откройте приложение по адресу https://");return}
-  cam.handler=scanHandlers[inputId];$("camTitle").textContent="Сканирование · "+(CAM_TITLES[inputId]||"");$("camLast").textContent="Наведите камеру на штрихкод";$("camOv").hidden=false;
-  const video=$("camVideo");
-  try{
-    let det=null;
-    if("BarcodeDetector" in window){try{const f=await BarcodeDetector.getSupportedFormats();const want=["ean_13","ean_8","code_128","code_39","code_93","upc_a","upc_e","itf","qr_code","data_matrix","codabar"].filter(x=>f.includes(x));if(want.length)det=new BarcodeDetector({formats:want})}catch(e){}}
-    if(det){
-      cam.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
-      video.srcObject=cam.stream;await video.play();
-      const tick=async()=>{if(!cam.stream)return;try{const codes=await det.detect(video);if(codes.length)camHit(codes[0].rawValue)}catch(e){}cam.timer=setTimeout(tick,120)};tick();
-    }else if(window.ZXing&&ZXing.BrowserMultiFormatReader){
-      const hints=new Map();hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
-      cam.reader=new ZXing.BrowserMultiFormatReader(hints,150);
-      await cam.reader.decodeFromConstraints({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}},video,res=>{if(res)camHit(res.getText())});
-    }else throw new Error("Этот браузер не умеет сканировать камерой. Используйте Chrome или Safari.");
-  }catch(e){closeCam();fail(e&&e.name==="NotAllowedError"?"Нет доступа к камере. Разрешите его в настройках браузера для этого сайта.":(e&&e.message)||"Камера недоступна")}
+  cam.handler=scanHandlers[inputId];cam.last="";
+  if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    toast("Живое видео с камеры здесь недоступно. Сфотографируйте штрихкод.");$("camPhoto").click();return}
+  $("camTitle").textContent="Сканирование · "+(CAM_TITLES[inputId]||"");$("camLast").textContent="";
+  $("camSwitch").hidden=true;$("camTorch").hidden=true;$("camOv").hidden=false;
+  camStatus("Разрешите доступ к камере, если браузер спросит");
+  if(!await camDecoder()){camStatus("Не загрузился модуль распознавания. Обновите страницу.",true);return}
+  await camStart(ls.get("camDevice"));
+}
+async function camStart(deviceId){
+  camStopStream();
+  const tries=[];
+  if(deviceId)tries.push({deviceId:{exact:deviceId}});
+  tries.push({facingMode:{ideal:"environment"}},true);
+  let err=null;
+  for(const video of tries){
+    try{cam.stream=await navigator.mediaDevices.getUserMedia({video,audio:false});break}
+    catch(e){err=e;if(e.name==="NotAllowedError"||e.name==="SecurityError")break}
+  }
+  if($("camOv").hidden){camStopStream();return}
+  if(!cam.stream){camStatus(camErrorText(err)+(IN_APP?" Во встроенном браузере мессенджера камера часто не работает: откройте сайт в Chrome или Safari.":""),true);return}
+  const v=$("camVideo");v.muted=true;v.setAttribute("playsinline","");v.setAttribute("autoplay","");v.srcObject=cam.stream;
+  try{await v.play()}catch(e){}
+  const track=cam.stream.getVideoTracks()[0];
+  try{cam.deviceId=(track.getSettings&&track.getSettings().deviceId)||""}catch(e){cam.deviceId=""}
+  try{cam.devices=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput")}catch(e){cam.devices=[]}
+  $("camSwitch").hidden=cam.devices.length<2;
+  let caps={};try{caps=track.getCapabilities?track.getCapabilities():{}}catch(e){}
+  cam.torch=false;$("camTorch").hidden=!caps.torch;$("camTorch").textContent="Фонарик";
+  camStatus("Наведите камеру на штрихкод");
+  cam.n=0;cam.dark=0;cam.noFrame=0;camLoop();
+}
+function camLoop(){
+  const tick=async()=>{
+    if(!cam.stream)return;
+    const v=$("camVideo");
+    if(v.videoWidth&&v.readyState>=2){
+      cam.noFrame=0;
+      const w=Math.min(800,v.videoWidth),h=Math.round(v.videoHeight*w/v.videoWidth);
+      const c=cam.canvas||(cam.canvas=document.createElement("canvas"));
+      if(c.width!==w||c.height!==h){c.width=w;c.height=h;cam.ctx=null}
+      const ctx=cam.ctx||(cam.ctx=c.getContext("2d",{willReadFrequently:true}));
+      ctx.drawImage(v,0,0,w,h);
+      if(++cam.n%6===0){
+        const d=ctx.getImageData(0,0,w,h).data;let s=0,k=0;
+        for(let i=0;i<d.length;i+=4*101){s+=d[i]+d[i+1]+d[i+2];k++}
+        const dark=s/k/3<8;cam.dark=dark?cam.dark+1:0;
+        if(cam.dark===3)camStatus(cam.devices.length>1?"Картинка чёрная. Нажмите «Другая камера», пока не появится изображение.":"Картинка чёрная. Проверьте, не закрыт ли объектив, или нажмите «Сфотографировать».",true);
+        else if(!dark&&cam.warn)camStatus("Наведите камеру на штрихкод");
+      }
+      const code=await decodeCanvas(c);
+      if(code)camHit(code);
+    }else if(++cam.noFrame===20)camStatus("Видео с камеры не приходит. Нажмите «Другая камера» или «Сфотографировать».",true);
+    if(cam.stream)cam.timer=setTimeout(tick,150);
+  };
+  tick();
 }
 function camHit(code){
   const t=Date.now();if(code===cam.last&&t-cam.lastT<1500)return;cam.last=code;cam.lastT=t;
@@ -144,13 +215,43 @@ function camHit(code){
   if(cam.handler)cam.handler(code);
   if(!$("camCont").checked)closeCam();
 }
-function closeCam(){
-  clearTimeout(cam.timer);
-  if(cam.reader){try{cam.reader.reset()}catch(e){}cam.reader=null}
-  if(cam.stream){cam.stream.getTracks().forEach(t=>t.stop());cam.stream=null}
-  const v=$("camVideo");try{v.pause()}catch(e){}v.srcObject=null;$("camOv").hidden=true;cam.last="";
-}
+function closeCam(){camStopStream();$("camOv").hidden=true;cam.last=""}
 $("camClose").addEventListener("click",closeCam);
+$("camSwitch").addEventListener("click",async()=>{
+  if(!cam.devices.length)return;
+  const i=(cam.devices.findIndex(d=>d.deviceId===cam.deviceId)+1)%cam.devices.length;
+  const d=cam.devices[i];ls.set("camDevice",d.deviceId);
+  camStatus(`Включаю камеру ${i+1} из ${cam.devices.length}…`);
+  await camStart(d.deviceId);
+  if(!cam.warn)camStatus(`Камера ${i+1} из ${cam.devices.length}${d.label?" · "+d.label:""}. Наведите на штрихкод`);
+});
+$("camTorch").addEventListener("click",async()=>{
+  const t=cam.stream&&cam.stream.getVideoTracks()[0];if(!t)return;
+  try{await t.applyConstraints({advanced:[{torch:!cam.torch}]});cam.torch=!cam.torch}catch(e){fail("Фонарик не включился")}
+  $("camTorch").textContent=cam.torch?"Выключить фонарик":"Фонарик";
+});
+/* распознавание с фотографии: работает даже там, где живое видео недоступно */
+$("camPhotoBtn").addEventListener("click",()=>$("camPhoto").click());
+$("camPhoto").addEventListener("change",async e=>{
+  const file=e.target.files[0];e.target.value="";if(!file)return;
+  if(!await camDecoder()){fail("Не загрузился модуль распознавания. Обновите страницу.");return}
+  let img;
+  try{img=await new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=no;i.src=URL.createObjectURL(file)})}
+  catch(err){fail("Не удалось открыть фото");return}
+  const c=document.createElement("canvas");let code=null;
+  for(const rot of [0,90]){
+    const s=Math.min(1,1600/Math.max(img.naturalWidth,img.naturalHeight));
+    const w=Math.round(img.naturalWidth*s),h=Math.round(img.naturalHeight*s);
+    c.width=rot?h:w;c.height=rot?w:h;const ctx=c.getContext("2d");
+    if(rot){ctx.translate(h,0);ctx.rotate(Math.PI/2)}
+    ctx.drawImage(img,0,0,w,h);
+    code=await decodeCanvas(c);if(code)break;
+  }
+  URL.revokeObjectURL(img.src);
+  if(!code){fail("Штрихкод на фото не найден. Снимите ближе и ровнее, чтобы штрихкод занимал большую часть кадра.");return}
+  if(!$("camOv").hidden)camHit(code);
+  else{$("camLast").textContent=code;if(cam.handler)cam.handler(code)}
+});
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("camOv").hidden)closeCam()});
 
 /* ---------- адреса и порядок обхода ---------- */
