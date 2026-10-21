@@ -1,0 +1,37 @@
+# После каждого обновления main: проверка тестами и выкладка на сервер склада.
+name: Выкладка на сервер
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency: deploy
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Тесты
+        run: npm test
+      - name: Выкладка
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then echo "Нет секрета DEPLOY_KEY — выкладка пропущена"; exit 0; fi
+          install -m 600 /dev/null key && printf '%s\n' "$DEPLOY_KEY" > key
+          ssh -i key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 root@wms.ff-delovkorobke.ru deploy
+      - name: Проверка версии на сайте
+        if: ${{ env.HAS_KEY == 'true' }}
+        env:
+          HAS_KEY: ${{ secrets.DEPLOY_KEY != '' }}
+        run: |
+          want=$(node -p 'require("./package.json").version')
+          for i in 1 2 3 4 5 6; do
+            got=$(curl -fsS https://wms.ff-delovkorobke.ru/api/health | node -pe 'JSON.parse(require("fs").readFileSync(0)).version' || true)
+            [ "$got" = "$want" ] && echo "На сайте версия $got" && exit 0
+            sleep 5
+          done
+          echo "На сайте версия «$got», а должна быть $want"; exit 1

@@ -5,6 +5,7 @@ set -e
 cd "$(dirname "$0")"
 pkill -f "node server.js" || true
 sleep 1
-nohup node server.js >> log.txt 2>&1 &
+# setsid и </dev/null — чтобы программа не останавливалась, когда закрывается окно SSH или выкладка из GitHub
+setsid nohup node server.js >> log.txt 2>&1 < /dev/null &
 sleep 2
 curl -fsS localhost:8080/api/health && echo && echo "Обновлено и запущено."
