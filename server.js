@@ -426,13 +426,16 @@ route("POST", "/api/asn", "any", ({ body, user }) => {
   const prods = db.prepare("SELECT article, name, barcodes FROM products WHERE ckey=?").all(ck);
   const byBc = new Map(), byDigits = new Map();
   for (const p of prods) { for (const b of JSON.parse(p.barcodes)) byBc.set(b, p); const d = p.article.replace(/\D/g, ""); if (d.length >= 5 && !byDigits.has(d)) byDigits.set(d, p); }
+  // новый товар известной модели пишем так же, как остальные: «11915131» при модели 11915/… → 11915/131
+  const models = [...new Set(prods.map(p => (p.article.match(/^(\d{4,})\/\d+$/) || [])[1]).filter(Boolean))].sort((a, b) => b.length - a.length);
+  const withSlash = t => { const m = models.find(m => t.startsWith(m) && t.length - m.length >= 2 && t.length - m.length <= 3); return m ? m + "/" + t.slice(m.length) : t; };
   const merged = new Map();
   for (const r of raw) {
     const qty = int(r.qty), barcode = str(r.barcode, 64).replace(/\.0+$/, ""), name = str(r.name, 300), box = str(r.box, 40);
     let article = str(r.article, 120);
     if (!(qty > 0) || (!barcode && !article)) continue;
     const p = byBc.get(barcode) || (!article && byDigits.get((name.match(/\d{5,}/g) || []).sort((a, b) => b.length - a.length)[0] || ""));
-    if (p) article = p.article; else if (!article) article = (name.match(/\d{5,}/g) || []).sort((a, b) => b.length - a.length)[0] || barcode;
+    if (p) article = p.article; else if (!article) { const t = (name.match(/\d{5,}/g) || []).sort((a, b) => b.length - a.length)[0]; article = t ? withSlash(t) : barcode; }
     const l = { article, name: p && p.name ? p.name : name, barcode, qty, boxes: box ? [box] : [], known: !!p };
     const k = asnKey(l), was = merged.get(k);
     if (was) { was.qty += qty; if (box && !was.boxes.includes(box)) was.boxes.push(box); } else merged.set(k, l);

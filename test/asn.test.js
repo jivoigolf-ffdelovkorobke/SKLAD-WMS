@@ -58,7 +58,11 @@ test("клиент загружает список отправленного", 
   assert.equal(peggy.name, "Пегги черный", "название из справочника склада");
   assert.deepEqual(peggy.boxes, ["3", "4"]);
   assert.equal(a.lines.find(l => l.barcode === "4630105123593").article, "71653/26", "по цифрам из наименования: 7165326 = 71653/26");
-  assert.equal(a.lines.find(l => l.barcode === "4630209608132").article, "7158524", "незнакомый товар — цифры из наименования");
+  assert.equal(a.lines.find(l => l.barcode === "4630209608132").article, "7158524", "незнакомая модель — цифры из наименования как есть");
+  const n = await chip("POST", "/api/asn", { title: "Новый цвет", lines: [{ name: "Пегги WB 56-58 71895120   Пудровый", barcode: "4630114975596", qty: 2 }, { name: "Лайза * WB 56-58 7165325   Розовый", barcode: "4630105123630", qty: 1 }] });
+  const na = (await chip("GET", "/api/my")).asn.find(x => x.id === n.id);
+  assert.deepEqual(na.lines.map(l => l.article).sort(), ["71653/25", "71895/120"], "новый цвет известной модели — с дробью, как остальные артикулы");
+  await chip("POST", "/api/asn/delete", { id: n.id });
   assert.ok(!(await other("GET", "/api/my")).asn.some(x => x.id === asnId), "чужой клиент заявку не видит");
 });
 
