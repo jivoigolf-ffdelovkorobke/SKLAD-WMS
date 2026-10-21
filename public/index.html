@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Склад">
-<link rel="stylesheet" href="app.css?v=1.2.0">
+<link rel="stylesheet" href="app.css?v=1.2.1">
 </head>
 <body>
 
@@ -61,6 +61,7 @@
     <button role="tab" data-tab="prod" type="button">Товары</button>
     <button role="tab" data-tab="cells" type="button">Ячейки</button>
     <button role="tab" data-tab="log" type="button">Журнал</button>
+    <button role="tab" data-tab="users" type="button" class="admin-only">Пользователи</button>
     <button role="tab" data-tab="svc" type="button">Услуги</button>
     <button role="tab" data-tab="bill" type="button" class="admin-only">Счета</button>
     <button role="tab" data-tab="admin" type="button" class="admin-only">Управление</button>
@@ -431,10 +432,10 @@
     </form>
   </section>
 
-  <!-- ============ УПРАВЛЕНИЕ ============ -->
-  <section class="view" id="view-admin" hidden>
+  <!-- ============ ПОЛЬЗОВАТЕЛИ ============ -->
+  <section class="view" id="view-users" hidden>
     <div class="panel">
-      <h2>Новый пользователь</h2>
+      <h2>Добавить сотрудника или клиента</h2>
       <form id="uForm" class="row" autocomplete="off">
         <label class="f">Имя<input id="uName" placeholder="Иван Петров" required></label>
         <label class="f">Логин<input id="uLogin" autocapitalize="none" spellcheck="false" placeholder="ivan" required></label>
@@ -456,6 +457,15 @@
         <select id="pvClient" style="flex:1 1 220px"></select>
         <button class="btn" id="pvOpen" type="button">Открыть кабинет</button>
       </div>
+    </div>
+  </section>
+
+  <!-- ============ УПРАВЛЕНИЕ ============ -->
+  <section class="view" id="view-admin" hidden>
+    <div class="panel">
+      <h2>Пользователи</h2>
+      <p class="hint">Сотрудники и клиенты добавляются на отдельной вкладке.</p>
+      <button class="btn" type="button" data-goto="users" style="align-self:flex-start">Перейти к пользователям</button>
     </div>
     <div class="panel">
       <h2>Резервная копия</h2>
@@ -575,6 +585,6 @@
 <script src="vendor/xlsx.full.min.js" defer></script>
 <script src="vendor/JsBarcode.all.min.js" defer></script>
 <script src="vendor/zxing.min.js" defer></script>
-<script src="app.js?v=1.2.0" defer></script>
+<script src="app.js?v=1.2.1" defer></script>
 </body>
 </html>

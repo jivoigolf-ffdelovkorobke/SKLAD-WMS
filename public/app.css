@@ -219,3 +219,10 @@ body:not([data-role="admin"]) .admin-only{display:none!important}
   .pt-table th{white-space:normal}
   .pt-table th,.pt-table td{padding:9px 8px}
 }
+
+/* на телефоне все вкладки видны сразу: переносятся на несколько строк, а не прячутся за край */
+@media (max-width:640px){
+  .tabs{flex-wrap:wrap;position:static;overflow:visible;gap:6px}
+  .tabs button{flex:0 0 auto;padding:8px 12px;font-size:.86rem;background:var(--tint)}
+  .tabs button[aria-selected="true"]{background:var(--ink);color:var(--bg)}
+}

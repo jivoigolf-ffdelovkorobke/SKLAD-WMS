@@ -1081,7 +1081,7 @@ function setPtTab(name){
   const b=$("ptTabs").querySelector(`[data-pt="${name}"]`);b&&b.scrollIntoView({inline:"nearest",block:"nearest"});
 }
 $("ptTabs").addEventListener("click",e=>{const b=e.target.closest("[data-pt]");if(b)setPtTab(b.dataset.pt)});
-$("ptBack").addEventListener("click",()=>{mode="app";P.data=null;$("portal").hidden=true;$("app").hidden=false;setTab("admin");load(ALL_PARTS)});
+$("ptBack").addEventListener("click",()=>{mode="app";P.data=null;$("portal").hidden=true;$("app").hidden=false;setTab("users");load(ALL_PARTS)});
 $("ptLogout").addEventListener("click",async()=>{try{await api("POST","/api/logout",{})}catch(e){}showLogin(false)});
 /* сводка по артикулу: на складе (в ячейках) и в приёмке (ещё не разложено) */
 function ptItems(){
@@ -1343,21 +1343,22 @@ function renderPtBill(){
 $("ptBillList").addEventListener("click",e=>{const b=e.target.closest("[data-ptinv]");if(b)printInvoice(+b.dataset.ptinv)});
 
 /* ---------- вкладки ---------- */
-const TABS=["rc","mv","pick","inv","stock","prod","cells","log","svc","bill","admin"];
+const TABS=["rc","mv","pick","inv","stock","prod","cells","log","users","svc","bill","admin"];
 function setTab(name){
-  if(!TABS.includes(name)||((name==="admin"||name==="bill")&&!isAdmin()))name="rc";tab=name;
+  if(!TABS.includes(name)||((name==="admin"||name==="bill"||name==="users")&&!isAdmin()))name="rc";tab=name;
   [...$("tabs").children].forEach(b=>b.setAttribute("aria-selected",String(b.dataset.tab===name)));
   TABS.forEach(n=>$("view-"+n).hidden=n!==name);
   ls.set("tab",name);renderActive();
-  if(name==="admin")loadUsers();
+  if(name==="users")loadUsers();
   if(name==="svc"||name==="bill")loadBilling();
   const sc={rc:"rcScan",mv:"mvScan",inv:"invScan",pick:plan?"pkScan":null}[name];
   if(sc&&window.matchMedia("(pointer:fine)").matches)setTimeout(()=>$(sc).focus(),0);
   const b=$("tabs").querySelector(`[data-tab="${name}"]`);b&&b.scrollIntoView({inline:"nearest",block:"nearest"});
 }
 $("tabs").addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b)setTab(b.dataset.tab)});
+document.addEventListener("click",e=>{const b=e.target.closest("[data-goto]");if(b)setTab(b.dataset.goto)});
 function renderActive(){
-  ({rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,svc:renderSvc,bill:renderBill,admin:renderUsers})[tab]();
+  ({rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,users:renderUsers,svc:renderSvc,bill:renderBill,admin:()=>{$("appVersion").textContent=appVersion?`Версия приложения ${appVersion}`:""}})[tab]();
 }
 function setStatus(off){
   let units=0;const cells=new Set();D.stock.forEach(r=>{units+=r.qty;cells.add(r.cell)});
