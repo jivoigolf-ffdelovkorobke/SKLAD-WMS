@@ -110,7 +110,8 @@ test("счёт: предпросмотр, выставление, повтор, 
 
   const full = await admin("GET", "/api/billing/invoice?id=" + inv.id);
   assert.equal(full.invoice.lines.reduce((a, l) => a + l.amount, 0), 175.5);
-  assert.equal(full.supplier.vat_note, "Без НДС");
+  assert.equal(full.doc.supplier.vat_note, "Без НДС");
+  assert.ok(!("dadata_key" in full.doc.supplier));
   assert.ok(!("ckey" in full.invoice));
 
   assert.equal((await admin("POST", "/api/billing/invoices/status", { id: inv.id, action: "cancel" })).ok, true);

@@ -107,7 +107,7 @@ test("нельзя отключить последнего администра�
 test("кабинет клиента: видит только свои данные и ничего не может менять", async () => {
   // у склада два клиента: «ООО Ромашка» (из приёмки выше) и «ИП Иванов»
   assert.equal((await admin("POST", "/api/users", { login: "romashka", name: "Ольга", password: "client1", role: "client" })).status, 400, "клиент без компании");
-  assert.equal((await admin("POST", "/api/users", { login: "romashka", name: "Ольга", password: "client1", role: "client", client: "ооо  ромашка" })).ok, true);
+  assert.equal((await admin("POST", "/api/users", { login: "romashka", name: "Ольга", password: "client1", role: "client", client: "ооо  ромашка", can_change_pw: true })).ok, true);
   const cl = agent();
   assert.equal((await cl("POST", "/api/login", { login: "romashka", password: "client1" })).ok, true);
   const me = await cl("GET", "/api/me");
