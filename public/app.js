@@ -61,7 +61,7 @@ const ALL_PARTS=["stock","products","cells","ops","receipts"];
 function reloadAll(parts){
   if(mode==="portal"){loadPortal();return}
   const data=(parts||ALL_PARTS).filter(p=>ALL_PARTS.includes(p));if(data.length&&hasData())load(data);
-  if((tab==="svc"||tab==="bill")&&(!parts||parts.includes("billing")))loadBilling();
+  if((tab==="svc"||BILL_TABS.includes(tab))&&(!parts||parts.includes("billing")))loadBilling();
   if(!parts||parts.includes("team")){if(tab==="team")loadTeam();if(tab==="me")loadCabinet()}
 }
 let es=null;
@@ -806,8 +806,8 @@ $("addForm").addEventListener("submit",async e=>{
 });
 function renderStock(){
   let units=0;const cells=new Set(),arts=new Set();let buf=0;
-  D.stock.forEach(r=>{units+=r.qty;cells.add(r.cell);arts.add(pkey(r.client,r.article));if(r.cell===BUF)buf+=r.qty});
-  $("stockKv").innerHTML=`<div><span>Единиц</span><b>${units}</b></div><div><span>Товаров</span><b>${arts.size}</b></div><div><span>Занято ячеек</span><b>${cells.size}</b></div><div><span>Не размещено</span><b>${buf}</b></div>`;
+  D.stock.forEach(r=>{units+=r.qty;if(r.cell===BUF)buf+=r.qty;else cells.add(r.cell);arts.add(pkey(r.client,r.article))});
+  $("stockKv").innerHTML=`<div><span>Единиц</span><b>${units}</b></div><div><span>Товаров</span><b>${arts.size}</b></div><div><span>Занято ячеек</span><b>${cells.size}</b></div><div${buf?' class="warn"':""}><span>Ждёт размещения</span><b>${buf}</b></div>`;
   const q=norm($("q").value),fc=$("fClient").value;
   let rows=[...D.stock.values()].filter(r=>(!fc||norm(r.client)===norm(fc))&&(!q||[r.cell,r.article,r.name,r.client].some(v=>norm(v).includes(q))));
   const box=$("stockTable");
@@ -924,7 +924,9 @@ $("importMsg").addEventListener("click",async e=>{
     }
   }
   await load(["stock","products","ops","cells"]);
-  $("importMsg").innerHTML=`<div class="notice ok">Добавлено строк: ${res.ok}, единиц: ${res.units}${res.skippedBc?`. Штрихкодов пропущено (уже заняты другими товарами): ${res.skippedBc}`:""}.${extra}</div>`;
+  // штрихкод, занятый другим товаром, — частый признак того, что клиент записан в файле иначе, чем на складе
+  const bc=res.conflicts&&res.conflicts.length?`<div class="notice warn"><b>Штрихкоды не привязаны (${res.skippedBc}):</b> они уже принадлежат другим товарам. Проверьте, не записан ли клиент в файле по-другому.<ul>${res.conflicts.slice(0,10).map(c=>`<li><span class="mono">${esc(c.barcode)}</span> → ${esc(c.article)}: уже у ${esc(c.owner)}</li>`).join("")}</ul></div>`:"";
+  $("importMsg").innerHTML=`<div class="notice ok">Добавлено строк: ${res.ok}, единиц: ${res.units}${res.skipped?`. Пропущено строк без ячейки, клиента, артикула или количества: ${res.skipped}`:""}.${extra}</div>${bc}`;
   okb("Раскладка загружена");
 });
 $("tplBtn").addEventListener("click",()=>saveXlsx("raskladka-shablon.xlsx",[["Ячейка","Клиент","Артикул","Наименование","Количество","Штрихкод"],["A-01-1-01","ИП Пример","ART-001","Пример товара",10,"4600000000001"]],"Раскладка"));
@@ -959,7 +961,7 @@ function renderProd(){
 }
 $("pTable").addEventListener("change",e=>{const cb=e.target.closest("input[type=checkbox]");if(!cb)return;const id=cb.closest("tr").dataset.id;cb.checked?pSel.add(id):pSel.delete(id);renderProd()});
 $("pTable").addEventListener("click",e=>{if(!e.target.closest("[data-edit]"))return;const p=D.products.get(e.target.closest("tr").dataset.id);if(!p)return;
-  $("pClient").value=p.client;$("pArt").value=p.article;$("pName").value=p.name||"";$("pBc").value=(p.barcodes||[]).join(", ");$("pName").focus();window.scrollTo({top:0,behavior:"smooth"})});
+  $("pClient").value=p.client;$("pArt").value=p.article;$("pName").value=p.name||"";$("pBc").value=(p.barcodes||[]).join(", ");$("pFold").open=true;$("pName").focus();window.scrollTo({top:0,behavior:"smooth"})});
 $("pSelAll").addEventListener("change",e=>{prodRows().forEach(p=>e.target.checked?pSel.add(p.id):pSel.delete(p.id));renderProd()});
 $("pq").addEventListener("input",renderProd);$("pfClient").addEventListener("change",renderProd);
 $("pForm").addEventListener("submit",async e=>{
@@ -1293,7 +1295,7 @@ function renderTeam(){
   userOpts($("fnUser"),users);userOpts($("ptnUser"),users);
   if(!$("fnDay").value||!$("fnDay").value.startsWith(d.month))$("fnDay").value=d.today.startsWith(d.month)?d.today:d.from;
   if(!$("ptnStart").value||!$("ptnStart").value.startsWith(d.month))$("ptnStart").value=d.from;
-  if(!users.length){$("tmGrid").innerHTML=`<div class="empty"><b>Сотрудников нет</b>${me.role==="admin"?"Добавьте сотрудников во вкладке «Доступы» и укажите подразделение.":"В ваших подразделениях пока нет сотрудников."}</div>`;$("tmSalary").innerHTML="";$("fnList").innerHTML="";return}
+  if(!users.length){$("tmGrid").innerHTML=`<div class="empty"><b>Сотрудников нет</b>${me.role==="admin"?"Добавьте сотрудников в «Настройки → Клиенты и сотрудники» и укажите подразделение.":"В ваших подразделениях пока нет сотрудников."}</div>`;$("tmSalary").innerHTML="";$("fnList").innerHTML="";return}
   const sh=new Map(d.shifts.map(s=>[s.user_id+"|"+s.day,s.status]));
   $("tmGrid").innerHTML=`<div class="table-wrap grid-wrap"><table class="sgrid"><thead><tr><th class="sg-name">Сотрудник</th>${days.map(x=>{const w=wdOf(x);return`<th class="${w===0||w===6?"we":""}${x===d.today?" today":""}"><span>${+x.slice(8)}</span><small>${WD[w]}</small></th>`}).join("")}<th class="num">✓</th></tr></thead><tbody>${users.map(u=>{
     const act=d.activity[u.id]||{};let done=0;
@@ -1514,9 +1516,9 @@ async function loadBilling(){
     try{
       const c=$("chfClient").value,qs=new URLSearchParams();if(c)qs.set("client",c);if($("chOpen").checked)qs.set("open","1");
       const[s,ch,inv,sum,set,cl]=await Promise.all([api("GET","/api/billing/services"),api("GET","/api/billing/charges?"+qs),
-        isAdmin()?api("GET","/api/billing/invoices"):null,isAdmin()?api("GET","/api/billing/summary"):null,isAdmin()&&!BL.settings?api("GET","/api/billing/settings"):null,isAdmin()&&tab==="bill"?api("GET","/api/clients"):null]);
+        isAdmin()?api("GET","/api/billing/invoices"):null,isAdmin()?api("GET","/api/billing/summary"):null,isAdmin()&&!BL.settings?api("GET","/api/billing/settings"):null,isAdmin()&&BILL_TABS.includes(tab)?api("GET","/api/clients"):null]);
       BL.services=s.services;BL.charges=ch.charges;if(inv)BL.invoices=inv.invoices;if(sum)BL.summary=sum;if(set){BL.settings=set.settings;fillReq()}if(cl){AC.clients=cl.clients;AC.banks=cl.banks}
-      if(tab==="svc")renderSvc();if(tab==="bill")renderBill();
+      if(tab==="svc")renderSvc();if(BILL_TABS.includes(tab))renderBill();
     }catch(e){fail(e.message)}
     finally{blLoading=null;if(blAgain){blAgain=false;loadBilling()}}
   })();
@@ -1793,33 +1795,45 @@ function renderPtBill(){
 $("ptBillList").addEventListener("click",e=>{const b=e.target.closest("[data-ptinv]");if(b)printInvoice(+b.dataset.ptinv,b.dataset.kind,b)});
 
 /* ---------- вкладки ---------- */
-const TABS=["rc","mv","pick","inv","stock","prod","cells","log","svc","bill","team","me","access","admin"];
+const TABS=["rc","mv","pick","inv","stock","prod","cells","log","svc","bill","tariffs","req","team","me","access","admin"];
+const BILL_TABS=["bill","tariffs","req"];
+const tabGroup=name=>{const b=$("tabs").querySelector(`[data-tab="${name}"]`);return b?b.dataset.group:""};
 function tabAllowed(name){
   const b=$("tabs").querySelector(`[data-tab="${name}"]`),p=b&&b.dataset.perm;
   if(!b||!me)return false;if(p==="admin")return isAdmin();if(p==="staff")return me.role!=="client";return can(p);
 }
+/* разделы сверху, вкладки раздела под ними: у кладовщика без финансов и настроек этих разделов просто нет */
+function renderNav(){
+  const g=tabGroup(tab);
+  [...$("groups").children].forEach(b=>{b.hidden=!TABS.some(t=>tabGroup(t)===b.dataset.group&&tabAllowed(t));b.setAttribute("aria-current",String(b.dataset.group===g))});
+  const inGroup=[...$("tabs").children].filter(b=>b.dataset.group===g&&tabAllowed(b.dataset.tab));
+  [...$("tabs").children].forEach(b=>{b.hidden=!inGroup.includes(b);b.setAttribute("aria-selected",String(b.dataset.tab===tab))});
+  $("tabs").hidden=inGroup.length<2;
+}
+$("groups").addEventListener("click",e=>{const b=e.target.closest("[data-group]");if(!b)return;
+  const g=b.dataset.group,last=(ls.get("groupTab")||{})[g];
+  setTab(last&&tabGroup(last)===g&&tabAllowed(last)?last:TABS.find(t=>tabGroup(t)===g&&tabAllowed(t)))});
 function setTab(name){
   if(!TABS.includes(name)||!tabAllowed(name))name=TABS.find(tabAllowed)||"me";tab=name;
-  [...$("tabs").children].forEach(b=>b.setAttribute("aria-selected",String(b.dataset.tab===name)));
   TABS.forEach(n=>$("view-"+n).hidden=n!==name);
-  ls.set("tab",name);renderActive();
-  if(name==="svc"||name==="bill")loadBilling();
+  const gt=ls.get("groupTab")||{};gt[tabGroup(name)]=name;ls.set("groupTab",gt);
+  ls.set("tab",name);renderNav();renderActive();
+  if(name==="svc"||BILL_TABS.includes(name))loadBilling();
   if(name==="access")loadAccess();
   if(name==="team")loadTeam();
   if(name==="me")loadCabinet();
   const sc={rc:"rcScan",mv:"mvScan",inv:"invScan",pick:plan?"pkScan":null}[name];
   if(sc&&window.matchMedia("(pointer:fine)").matches)setTimeout(()=>$(sc).focus(),0);
-  const b=$("tabs").querySelector(`[data-tab="${name}"]`);b&&b.scrollIntoView({inline:"nearest",block:"nearest"});
 }
 $("tabs").addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b)setTab(b.dataset.tab)});
 document.addEventListener("click",e=>{const b=e.target.closest("[data-goto]");if(b)setTab(b.dataset.goto)});
 function renderActive(){
-  ({rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,svc:renderSvc,bill:renderBill,team:renderTeam,me:renderCabinet,access:renderAccess,admin:()=>{$("appVersion").textContent=appVersion?`Версия приложения ${appVersion}`:""}})[tab]();
+  ({rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,svc:renderSvc,bill:renderBill,tariffs:renderBill,req:renderBill,team:renderTeam,me:renderCabinet,access:renderAccess,admin:()=>{$("appVersion").textContent=appVersion?`Версия приложения ${appVersion}`:""}})[tab]();
 }
 function setStatus(off){
-  let units=0;const cells=new Set();D.stock.forEach(r=>{units+=r.qty;cells.add(r.cell)});
+  let units=0;const cells=new Set();D.stock.forEach(r=>{units+=r.qty;if(r.cell!==BUF)cells.add(r.cell)});
   const st=$("status");st.classList.toggle("off",!!off);
-  st.innerHTML=off?"Нет связи":live?`<b>${cells.size}</b> ячеек · <b>${units}</b> шт.`:"Загрузка…";
+  st.innerHTML=off?"Нет связи":live?`<b>${units}</b> шт. в <b>${cells.size}</b> ${plural(cells.size,"ячейке","ячейках","ячейках")}`:"Загрузка…";
 }
 let rT=null;
 function refresh(){clearTimeout(rT);rT=setTimeout(()=>{setStatus(false);renderClientSelects();renderActive()},30)}
@@ -1872,7 +1886,6 @@ async function boot(){
   mode="app";
   $("whoName").textContent=me.name;
   $("login").hidden=true;$("portal").hidden=true;$("app").hidden=false;
-  [...$("tabs").children].forEach(b=>b.hidden=!tabAllowed(b.dataset.tab));
   setTab(ls.get("tab")||"rc");
   if(hasData())load(ALL_PARTS);
   connectEvents();

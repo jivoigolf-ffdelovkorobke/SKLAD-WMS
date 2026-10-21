@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Склад">
-<link rel="stylesheet" href="app.css?v=1.3.2">
+<link rel="stylesheet" href="app.css?v=1.4.0">
 </head>
 <body>
 
@@ -52,22 +52,33 @@
 <div class="wrap gutter">
   <div class="offline" id="offline" hidden>Нет связи с сервером. Изменения не сохранятся, пока связь не вернётся.</div>
 
-  <nav class="tabs" role="tablist" id="tabs">
-    <button role="tab" data-tab="rc" data-perm="ops" type="button">Приёмка</button>
-    <button role="tab" data-tab="mv" data-perm="ops" type="button">Размещение</button>
-    <button role="tab" data-tab="pick" data-perm="ops" type="button">Сборка</button>
-    <button role="tab" data-tab="inv" data-perm="ops" type="button">Инвентаризация</button>
-    <button role="tab" data-tab="stock" data-perm="stock" type="button">Остатки</button>
-    <button role="tab" data-tab="prod" data-perm="stock" type="button">Товары</button>
-    <button role="tab" data-tab="cells" data-perm="stock" type="button">Ячейки</button>
-    <button role="tab" data-tab="log" data-perm="stock" type="button">Журнал</button>
-    <button role="tab" data-tab="svc" data-perm="services" type="button">Услуги</button>
-    <button role="tab" data-tab="bill" data-perm="admin" type="button">Счета</button>
-    <button role="tab" data-tab="team" data-perm="team" type="button">График и зарплата</button>
-    <button role="tab" data-tab="me" data-perm="staff" type="button">Мой кабинет</button>
-    <button role="tab" data-tab="access" data-perm="admin" type="button">Доступы</button>
-    <button role="tab" data-tab="admin" data-perm="admin" type="button">Управление</button>
-  </nav>
+  <div class="navbar">
+    <nav class="groups" id="groups" aria-label="Разделы">
+      <button type="button" data-group="work">Работа</button>
+      <button type="button" data-group="store">Склад</button>
+      <button type="button" data-group="money">Финансы</button>
+      <button type="button" data-group="people">Команда</button>
+      <button type="button" data-group="settings">Настройки</button>
+    </nav>
+    <nav class="tabs" role="tablist" id="tabs">
+      <button role="tab" data-tab="rc" data-group="work" data-perm="ops" type="button">Приёмка</button>
+      <button role="tab" data-tab="mv" data-group="work" data-perm="ops" type="button">Размещение</button>
+      <button role="tab" data-tab="pick" data-group="work" data-perm="ops" type="button">Сборка</button>
+      <button role="tab" data-tab="inv" data-group="work" data-perm="ops" type="button">Инвентаризация</button>
+      <button role="tab" data-tab="stock" data-group="store" data-perm="stock" type="button">Остатки</button>
+      <button role="tab" data-tab="prod" data-group="store" data-perm="stock" type="button">Товары</button>
+      <button role="tab" data-tab="cells" data-group="store" data-perm="stock" type="button">Ячейки</button>
+      <button role="tab" data-tab="log" data-group="store" data-perm="stock" type="button">Журнал</button>
+      <button role="tab" data-tab="svc" data-group="money" data-perm="services" type="button">Услуги</button>
+      <button role="tab" data-tab="bill" data-group="money" data-perm="admin" type="button">Счета</button>
+      <button role="tab" data-tab="tariffs" data-group="money" data-perm="admin" type="button">Тарифы</button>
+      <button role="tab" data-tab="req" data-group="money" data-perm="admin" type="button">Реквизиты</button>
+      <button role="tab" data-tab="team" data-group="people" data-perm="team" type="button">График и зарплата</button>
+      <button role="tab" data-tab="me" data-group="people" data-perm="staff" type="button">Мой кабинет</button>
+      <button role="tab" data-tab="access" data-group="settings" data-perm="admin" type="button">Клиенты и сотрудники</button>
+      <button role="tab" data-tab="admin" data-group="settings" data-perm="admin" type="button">Система</button>
+    </nav>
+  </div>
 
   <!-- ============ ПРИЁМКА ============ -->
   <section class="view" id="view-rc" hidden>
@@ -83,7 +94,7 @@
         <div class="row" style="margin-top:10px">
           <label class="btn sm" for="rcFile">Загрузить Excel / CSV</label>
           <input type="file" id="rcFile" accept=".xlsx,.xls,.csv" hidden>
-          <span class="hint">Столбцы: Артикул, Количество, а также Наименование, Штрихкод и Ячейка, если есть. Будут видны недостачи и излишки, а если указаны ячейки — товар после приёмки сразу ляжет по ним.</span>
+          <span class="hint">Столбцы: Артикул, Количество; по желанию Наименование, Штрихкод, Ячейка. Покажу недостачи и излишки.</span>
         </div>
       </details>
     </div>
@@ -117,7 +128,7 @@
   <section class="view" id="view-mv" hidden>
     <div class="panel">
       <h2>Размещение и перемещение</h2>
-      <p class="hint">Отсканируйте ячейку назначения, затем товары. Источник по умолчанию — зона приёмки.</p>
+      <p class="hint">Отсканируйте ячейку «куда», затем товары. По умолчанию берём из зоны приёмки.</p>
       <div class="row">
         <label class="f">Откуда<input id="mvFrom" class="mono"></label>
         <label class="f">Куда<input id="mvTo" class="mono" placeholder="сканируйте ячейку"></label>
@@ -221,35 +232,6 @@
   <!-- ============ ОСТАТКИ ============ -->
   <section class="view" id="view-stock" hidden>
     <div class="kv" id="stockKv"></div>
-    <div class="panel admin-only">
-      <h2>Ручная корректировка</h2>
-      <form id="addForm" class="row" autocomplete="off">
-        <label class="f">Ячейка<input id="aCell" class="mono" placeholder="A-01-1-01" required></label>
-        <label class="f">Клиент<input id="aClient" list="clientList" placeholder="ИП Иванов" required></label>
-        <label class="f">Артикул продавца<input id="aArt" required></label>
-        <label class="f">Наименование<input id="aName" placeholder="необязательно"></label>
-        <label class="f narrow">Кол-во<input id="aQty" type="number" value="1" required></label>
-        <button class="btn primary" type="submit" style="align-self:flex-end">Провести</button>
-      </form>
-      <p class="hint">Плюс добавляет товар в ячейку, минус списывает. Каждая корректировка попадает в журнал.</p>
-    </div>
-
-    <div class="panel">
-      <div class="row between">
-        <h2>Excel</h2>
-        <div class="row">
-          <button class="btn sm admin-only" id="tplBtn" type="button">Шаблон раскладки</button>
-          <button class="btn sm" id="exportBtn" type="button">Выгрузить остатки</button>
-        </div>
-      </div>
-      <div class="admin-only" style="display:flex;flex-direction:column;gap:10px">
-        <p class="hint">Таблица со столбцами: Ячейка, Клиент (или ИП), Артикул, Наименование, Количество, Штрихкод. Ячейку можно писать один раз над её товарами. Можно выбрать несколько файлов сразу — перед загрузкой покажу, что получилось.</p>
-        <label class="btn" for="stockFile" style="align-self:flex-start">Загрузить раскладку</label>
-        <input type="file" id="stockFile" accept=".xlsx,.xls,.csv" multiple hidden>
-        <div id="importMsg"></div>
-      </div>
-    </div>
-
     <div class="panel">
       <div class="row">
         <input class="grow" id="q" placeholder="Поиск: ячейка, артикул, название">
@@ -258,34 +240,56 @@
           <button type="button" data-m="cell" aria-pressed="true">По ячейкам</button>
           <button type="button" data-m="art" aria-pressed="false">По товарам</button>
         </div>
+        <button class="btn sm" id="exportBtn" type="button">Выгрузить в Excel</button>
       </div>
       <div id="stockTable"></div>
     </div>
+
+    <details class="panel fold admin-only" id="adjFold">
+      <summary><h2>Ручная корректировка</h2><span class="hint">добавить или списать товар в ячейке</span></summary>
+      <form id="addForm" class="row" autocomplete="off">
+        <label class="f">Ячейка<input id="aCell" class="mono" placeholder="A-01-1-01" required></label>
+        <label class="f">Клиент<input id="aClient" list="clientList" placeholder="ИП Иванов" required></label>
+        <label class="f">Артикул продавца<input id="aArt" required></label>
+        <label class="f">Наименование<input id="aName" placeholder="необязательно"></label>
+        <label class="f narrow">Кол-во<input id="aQty" type="number" value="1" required></label>
+        <button class="btn primary" type="submit" style="align-self:flex-end">Провести</button>
+      </form>
+      <p class="hint">Плюс добавляет, минус списывает. Всё попадает в журнал.</p>
+    </details>
+
+    <details class="panel fold admin-only" id="impFold">
+      <summary><h2>Загрузка раскладки из Excel</h2><span class="hint">первичная загрузка остатков</span></summary>
+      <p class="hint">Столбцы: Ячейка, Клиент, Артикул, Наименование, Количество, Штрихкод. Перед загрузкой покажу, что получилось.</p>
+      <div class="row">
+        <label class="btn primary" for="stockFile">Выбрать файлы</label>
+        <button class="btn" id="tplBtn" type="button">Скачать шаблон</button>
+      </div>
+      <input type="file" id="stockFile" accept=".xlsx,.xls,.csv" multiple hidden>
+      <div id="importMsg"></div>
+    </details>
   </section>
 
   <!-- ============ ТОВАРЫ ============ -->
   <section class="view" id="view-prod" hidden>
-    <div class="panel">
-      <h2>Карточка товара</h2>
+    <details class="panel fold" id="pFold">
+      <summary><h2>Новый товар</h2><span class="hint">или нажмите «Изменить» в списке</span></summary>
       <form id="pForm" class="row" autocomplete="off">
         <label class="f">Клиент<input id="pClient" list="clientList" required></label>
         <label class="f">Артикул продавца<input id="pArt" required></label>
         <label class="f">Наименование<input id="pName"></label>
-        <label class="f">Штрихкоды<input id="pBc" class="mono" placeholder="через запятую"></label>
+        <label class="f">Штрихкоды<input id="pBc" class="mono" placeholder="через запятую: WB, Ozon, заводской"></label>
         <button class="btn primary" type="submit" style="align-self:flex-end">Сохранить</button>
       </form>
-      <p class="hint">По штрихкоду товар узнаётся при приёмке, размещении, сборке и инвентаризации. У одного товара может быть несколько штрихкодов (WB, Ozon, заводской).</p>
-    </div>
-    <div class="panel">
-      <div class="row between">
-        <h2>Справочник</h2>
-        <div class="row">
-          <button class="btn sm" id="pTpl" type="button">Шаблон Excel</button>
-          <label class="btn sm" for="pFile">Загрузить из Excel</label>
-          <input type="file" id="pFile" accept=".xlsx,.xls,.csv" hidden>
-          <button class="btn sm" id="pFromStock" type="button">Создать из остатков</button>
-        </div>
+      <div class="row">
+        <label class="btn sm" for="pFile">Загрузить из Excel</label>
+        <input type="file" id="pFile" accept=".xlsx,.xls,.csv" hidden>
+        <button class="btn sm ghost" id="pTpl" type="button">Шаблон</button>
+        <button class="btn sm ghost" id="pFromStock" type="button">Создать карточки из остатков</button>
       </div>
+    </details>
+    <div class="panel">
+      <h2>Справочник товаров</h2>
       <div id="pMsg"></div>
       <div class="row">
         <input class="grow" id="pq" placeholder="Поиск: артикул, название, штрихкод">
@@ -306,8 +310,8 @@
 
   <!-- ============ ЯЧЕЙКИ ============ -->
   <section class="view" id="view-cells" hidden>
-    <div class="panel">
-      <h2>Создать ячейки</h2>
+    <details class="panel fold" id="gFold">
+      <summary><h2>Создать ячейки</h2><span class="hint">сразу целый стеллаж</span></summary>
       <div class="row">
         <label class="f narrow">Зона<input id="gZone" class="mono" value="A"></label>
         <label class="f narrow">Стеллаж с<input id="gR1" type="number" min="1" value="1"></label>
@@ -319,8 +323,8 @@
         <span class="hint" id="gPreview"></span>
         <button class="btn primary" id="gCreate" type="button">Создать</button>
       </div>
-      <p class="hint">Адрес: зона-стеллаж-ярус-место. По этому порядку строится маршрут сборки.</p>
-    </div>
+      <p class="hint">Адрес: зона-стеллаж-ярус-место. По нему строится маршрут сборки.</p>
+    </details>
     <div class="panel">
       <div class="row">
         <input class="grow" id="cq" placeholder="Поиск ячейки">
@@ -367,7 +371,7 @@
         <label class="f">Комментарий<input id="chNote" placeholder="например, упаковка поставки на WB"></label>
         <button class="btn primary" type="submit" style="align-self:flex-end">Добавить</button>
       </form>
-      <p class="hint">Приёмка и сборка начисляются сами при каждой операции, хранение считается по дням при выставлении счёта. Здесь добавляют всё остальное: упаковку, маркировку, доставку.</p>
+      <p class="hint">Приёмка, сборка и хранение начисляются сами. Здесь — упаковка, маркировка, доставка и прочее.</p>
     </div>
     <div class="panel">
       <div class="row">
@@ -399,9 +403,13 @@
       <h2>Счета</h2>
       <div id="biTable"></div>
     </div>
+  </section>
+
+  <!-- ============ ТАРИФЫ ============ -->
+  <section class="view" id="view-tariffs" hidden>
     <div class="panel">
       <h2>Тарифы</h2>
-      <p class="hint">Цены по умолчанию для всех клиентов. Стартовые цены примерные — поставьте свои.</p>
+      <p class="hint">Цены по умолчанию для всех клиентов.</p>
       <div id="tfTable"></div>
       <form id="tfForm" class="row" autocomplete="off">
         <label class="f">Новая услуга<input id="tfName" placeholder="например, Фото товара" required></label>
@@ -412,10 +420,14 @@
     </div>
     <div class="panel">
       <h2>Цены для клиента</h2>
-      <p class="hint">Пустое поле — действует цена по умолчанию. Новая цена применяется к услугам, оказанным после сохранения.</p>
+      <p class="hint">Пустое поле — цена по умолчанию. Новая цена действует для услуг после сохранения.</p>
       <select id="cpClient" style="max-width:320px"></select>
       <div id="cpTable"></div>
     </div>
+  </section>
+
+  <!-- ============ РЕКВИЗИТЫ ============ -->
+  <section class="view" id="view-req" hidden>
     <form class="panel" id="reqForm" autocomplete="off">
       <h2>Реквизиты для счетов и актов</h2>
       <div class="row">
@@ -437,7 +449,7 @@
     </form>
     <div class="panel">
       <h2>Расчётные счета</h2>
-      <p class="hint">В счёт подставляется счёт подразделения клиента, если он задан, иначе — счёт клиента, иначе — основной. Привязка — во вкладке «Доступы».</p>
+      <p class="hint">В счёт идёт счёт подразделения клиента, иначе счёт клиента, иначе основной. Привязка — в «Клиенты и сотрудники».</p>
       <div id="bkList"></div>
       <form id="bkForm" class="sub-form" autocomplete="off">
         <div class="row">
@@ -460,7 +472,7 @@
     </div>
     <div class="panel">
       <h2>Печать и подпись</h2>
-      <p class="hint">Сфотографируйте или отсканируйте печать и подпись на белом листе. Белый фон уберётся сам, и они встанут в счета и акты. Картинки хранятся только на вашем сервере.</p>
+      <p class="hint">Фото печати и подписи на белом листе: фон уберётся сам, и они встанут в счета и акты.</p>
       <div class="sign-row">
         <div class="sign-box"><b>Печать</b><div class="sign-img" id="stampPrev"></div>
           <label class="btn sm">Загрузить<input type="file" accept="image/*" id="stampFile" hidden></label>
@@ -482,7 +494,6 @@
     <div id="acClientsBox" class="view">
       <div class="panel">
         <div class="row between"><h2>Клиенты и их логины</h2><button class="btn sm primary" type="button" id="acNewClient">Новый клиент</button></div>
-        <p class="hint">У клиента может быть несколько подразделений. На каждое подразделение выдаётся свой логин, а в документы подставляется свой расчётный счёт.</p>
         <form id="acClientForm" class="sub-form" autocomplete="off" hidden>
           <div class="row">
             <label class="f">ИНН<input id="acInn" class="mono" inputmode="numeric" placeholder="10 или 12 цифр"></label>
@@ -547,7 +558,7 @@
         <button class="btn" type="button" id="tmAuto" style="align-self:flex-end">Отметить смены по операциям</button>
         <button class="btn ghost" type="button" id="tmExport" style="align-self:flex-end">Выгрузить</button>
       </div>
-      <p class="hint legend"><span class="sh plan">П</span> по графику <span class="sh done">✓</span> отработал <span class="sh absent">✗</span> не вышел <span class="dot-act"></span> были операции в системе. Нажмите на клетку, чтобы сменить отметку. «Отметить смены по операциям» ставит ✓ в прошедшие дни, когда сотрудник работал в системе.</p>
+      <p class="hint legend"><span class="sh plan">П</span> по графику <span class="sh done">✓</span> отработал <span class="sh absent">✗</span> не вышел <span class="dot-act"></span> работал в системе. Нажмите на клетку, чтобы сменить отметку.</p>
       <div id="tmGrid"></div>
     </div>
     <div class="panel">
@@ -603,13 +614,8 @@
   <!-- ============ УПРАВЛЕНИЕ ============ -->
   <section class="view" id="view-admin" hidden>
     <div class="panel">
-      <h2>Пользователи</h2>
-      <p class="hint">Сотрудники и клиенты, их логины, права и оклады — на вкладке «Доступы».</p>
-      <button class="btn" type="button" data-goto="access" style="align-self:flex-start">Перейти в «Доступы»</button>
-    </div>
-    <div class="panel">
       <h2>Резервная копия</h2>
-      <p class="hint">Сервер сам сохраняет копию базы раз в сутки и хранит последние 14. Здесь можно скачать копию прямо сейчас.</p>
+      <p class="hint">Сервер сам сохраняет копию базы раз в сутки и хранит последние 14.</p>
       <button class="btn" id="backupBtn" type="button" style="align-self:flex-start">Скачать базу</button>
       <p class="hint" id="appVersion"></p>
     </div>
@@ -725,6 +731,6 @@
 <script src="vendor/xlsx.full.min.js" defer></script>
 <script src="vendor/JsBarcode.all.min.js" defer></script>
 <script src="vendor/zxing.min.js" defer></script>
-<script src="app.js?v=1.3.2" defer></script>
+<script src="app.js?v=1.4.0" defer></script>
 </body>
 </html>

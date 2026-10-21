@@ -262,6 +262,8 @@ function addStock(cell, client, article, name, delta) {
   cell = normCell(cell); client = str(client); article = str(article); name = str(name);
   if (!cell) throw bad("Не указана ячейка");
   if (!article) throw bad("Не указан артикул");
+  // «ничейный» товар не виден ни в одном кабинете и не попадает в счета — у каждой строки остатков есть клиент
+  if (!norm(client)) throw bad(`Не указан клиент для ${article}`);
   const row = Q.stockByKey.get(cell, norm(client), norm(article));
   const have = row ? row.qty : 0, qty = have + delta;
   if (qty < 0) throw conflict(`В ячейке ${cell} только ${have} шт. ${article}`);
@@ -292,7 +294,7 @@ function upsertProduct(client, article, name, barcodes, { replace = false, skipC
     if (!bc) continue;
     const owner = Q.bcOwner.get(bc);
     if (owner && (!cur || owner.id !== cur.id)) {
-      if (skipConflicts) { skipped.push(bc); continue; }
+      if (skipConflicts) { skipped.push({ barcode: bc, article, owner: `${owner.article} (${owner.client})` }); continue; }
       throw conflict(`Штрихкод ${bc} уже привязан к ${owner.article} (${owner.client})`);
     }
     set.add(bc);
@@ -563,22 +565,24 @@ route("POST", "/api/adjust", "admin", ({ body, user }) => {
 route("POST", "/api/import-stock", "admin", ({ body, user }) => {
   const rows = Array.isArray(body.rows) ? body.rows : [];
   if (rows.length > 20000) throw bad("Слишком большой файл: не больше 20 000 строк за раз");
-  let ok = 0, units = 0, skippedBc = 0;
+  let ok = 0, units = 0, skipped = 0;
+  const conflicts = [];
   const ckeys = new Set(), doc = `раскладка «${str(body.file, 120)}»`;
   tx(() => {
     for (const r of rows) {
       const qty = int(r.qty);
-      if (!normCell(r.cell) || !str(r.article) || !(qty > 0)) continue;
+      if (!normCell(r.cell) || !str(r.article) || !norm(r.client) || !(qty > 0)) { skipped++; continue; }
       addStock(r.cell, r.client, r.article, r.name, qty);
       addCell(r.cell);
-      skippedBc += (upsertProduct(r.client, r.article, r.name, r.barcode ? [r.barcode] : [], { skipConflicts: true }) || []).length;
+      // штрихкод, занятый другим товаром, не привязываем, но и не теряем молча — показываем, кому он принадлежит
+      conflicts.push(...(upsertProduct(r.client, r.article, r.name, r.barcode ? [r.barcode] : [], { skipConflicts: true }) || []));
       // каждая строка — отдельная запись журнала, чтобы клиент видел, откуда взялся товар
       log(user, { type: "adjust", client: r.client, article: r.article, name: r.name, qty, cell: normCell(r.cell), doc, note: "загрузка раскладки" });
       ok++; units += qty; ckeys.add(norm(r.client));
     }
   });
   broadcast(["stock", "products", "ops", "cells"], ckeys);
-  return { ok, units, skippedBc };
+  return { ok, units, skipped, skippedBc: conflicts.length, conflicts: conflicts.slice(0, 50) };
 });
 
 /* Справочник товаров */
@@ -1371,6 +1375,8 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "same-origin");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  // названия товаров и клиентов вводят люди и файлы: даже если где-то забудем экранировать, чужой скрипт не выполнится
+  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
   const url = new URL(req.url, "http://x");
   try {
     if (!url.pathname.startsWith("/api/")) {

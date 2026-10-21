@@ -25,3 +25,15 @@ test("версии файлов в index.html и кэше совпадают с 
   assert.ok(html.includes(`app.css?v=${v}`), "app.css?v=" + v);
   assert.match(fs.readFileSync(path.join(pub, "sw.js"), "utf8"), new RegExp(`sklad-v${v.split(".").slice(0, 2).join("\\.")}`));
 });
+
+test("навигация: у каждой вкладки есть раздел, страница и отрисовка", () => {
+  const groups = new Set([...html.matchAll(/<button type="button" data-group="([a-z]+)"/g)].map(m => m[1]));
+  const tabs = [...html.matchAll(/data-tab="([a-z]+)" data-group="([a-z]+)"/g)].map(m => ({ tab: m[1], group: m[2] }));
+  const list = JSON.parse(js.match(/const TABS=(\[[^\]]+\])/)[1]);
+  assert.deepEqual(tabs.map(t => t.tab), list, "порядок вкладок в разметке и в TABS совпадает");
+  for (const t of tabs) {
+    assert.ok(groups.has(t.group), `раздел ${t.group} для ${t.tab}`);
+    assert.ok(html.includes(`id="view-${t.tab}"`), `страница view-${t.tab}`);
+    assert.ok(new RegExp(`[{,]${t.tab}:`).test(js.match(/function renderActive\(\)\{([\s\S]*?)\n\}/)[1]), `отрисовка ${t.tab}`);
+  }
+});
