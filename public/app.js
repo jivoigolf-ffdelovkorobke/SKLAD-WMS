@@ -1794,29 +1794,97 @@ function renderPtBill(){
 }
 $("ptBillList").addEventListener("click",e=>{const b=e.target.closest("[data-ptinv]");if(b)printInvoice(+b.dataset.ptinv,b.dataset.kind,b)});
 
+/* ======================================================
+   ГЛАВНАЯ: сводка, быстрые действия и «что сделать»
+   ====================================================== */
+function renderHome(){
+  const today=new Date().toDateString(),isToday=o=>new Date(o.ts).toDateString()===today;
+  let units=0,buf=0,bufRows=0;const used=new Set(),byClient=new Map();
+  D.stock.forEach(r=>{units+=r.qty;if(r.cell===BUF){buf+=r.qty;bufRows++}else used.add(r.cell);
+    const k=norm(r.client),c=byClient.get(k)||{client:r.client,units:0,arts:new Set()};c.units+=r.qty;c.arts.add(norm(r.article));byClient.set(k,c)});
+  const ops=D.ops.filter(isToday),sum=t=>ops.filter(o=>o.type===t).reduce((a,o)=>a+Math.abs(o.qty),0);
+  const free=[...D.cells].filter(c=>!used.has(c)).length;
+  const hour=new Date().getHours(),hi=hour<5?"Доброй ночи":hour<12?"Доброе утро":hour<18?"Добрый день":"Добрый вечер";
+  $("pageSub").textContent=`${hi}, ${(me.name||"").split(" ")[0]}! ${new Date().toLocaleDateString("ru-RU",{weekday:"long",day:"numeric",month:"long"}).replace(/^./,c=>c.toUpperCase())}`;
+  // быстрые действия — как стартовый экран ТСД: крупные плитки самых частых операций
+  const Q=[["rc","in","Принять поставку","скан товара из коробки"],["mv","move","Разместить",buf?`${buf} шт. ждут`:"по ячейкам"],["pick","cart","Собрать заказы","лист WB / Ozon"],["inv","check","Пересчитать ячейку","инвентаризация"]].filter(q=>tabAllowed(q[0]));
+  $("homeQuick").innerHTML=Q.map(([t,ic,a,b])=>`<button type="button" class="tile${t==="mv"&&buf?" hot":""}" data-goto="${t}">${icon(ic)}<b>${a}</b><span>${b}</span></button>`).join("");
+  $("homeQuick").hidden=!Q.length;
+  $("homeKv").innerHTML=`<div><span>На складе</span><b>${units.toLocaleString("ru-RU")}</b><small>шт. у ${byClient.size} ${plural(byClient.size,"клиента","клиентов","клиентов")}</small></div>
+    <div${buf?' class="warn"':""}><span>Ждёт размещения</span><b>${buf.toLocaleString("ru-RU")}</b><small>${buf?`шт. в зоне приёмки`:"всё разложено"}</small></div>
+    <div><span>Принято сегодня</span><b>${sum("receive").toLocaleString("ru-RU")}</b><small>шт.</small></div>
+    <div><span>Собрано сегодня</span><b>${sum("pick").toLocaleString("ru-RU")}</b><small>шт.</small></div>
+    <div><span>Свободных ячеек</span><b>${free}</b><small>из ${D.cells.size}</small></div>`;
+  const noBc=[...D.products.values()].filter(p=>!(p.barcodes||[]).length).length;
+  const todo=[];
+  if(buf&&tabAllowed("mv"))todo.push(["warn",`Разместить ${buf} шт. из зоны приёмки`,`${bufRows} ${plural(bufRows,"позиция","позиции","позиций")} лежат в PRIEM`,"mv","Разместить"]);
+  if(noBc&&tabAllowed("prod"))todo.push(["",`У ${noBc} ${plural(noBc,"товара","товаров","товаров")} нет штрихкода`,"Сканер их не узнает — добавьте штрихкоды или напечатайте этикетки","prod","Открыть"]);
+  if(!D.cells.size&&tabAllowed("cells"))todo.push(["",`Ячейки ещё не созданы`,"Создайте стеллажи, чтобы строить маршрут сборки","cells","Создать"]);
+  $("homeTodo").innerHTML=todo.length?`<div class="todo">${todo.map(([c,t,s,g,b])=>`<div class="todo__i ${c}"><div><b>${esc(t)}</b><span>${esc(s)}</span></div><button class="btn sm${c==="warn"?" primary":""}" type="button" data-goto="${g}">${b}</button></div>`).join("")}</div>`
+    :`<div class="empty ok-empty"><b>Всё сделано</b>Неразмещённого товара нет, справочник в порядке.</div>`;
+  const last=D.ops.slice(0,7);
+  $("homeOps").innerHTML=last.length?`<div class="feed">${last.map(o=>`<div><span class="chip ${OPC[o.type]||""}">${OPN[o.type]||esc(o.type)}</span><span class="feed__t"><b class="mono">${esc(o.article)}</b> · ${Math.abs(o.qty)} шт.<br><span class="hint">${esc(o.client)}${o.user_name?" · "+esc(o.user_name):""}</span></span><span class="hint mono">${fmtTs(o.ts).slice(9)||""}<br>${fmtTs(o.ts).slice(0,8)}</span></div>`).join("")}</div>`
+    :`<p class="hint">Операций пока нет.</p>`;
+  const cl=[...byClient.values()].sort((a,b)=>b.units-a.units);const max=cl.length?cl[0].units:1;
+  $("homeClients").innerHTML=cl.length?`<div class="bars">${cl.slice(0,8).map(c=>`<button type="button" class="bars__r" data-hclient="${esc(c.client)}"><span class="bars__n">${esc(c.client)}</span><span class="bars__b"><i style="width:${Math.max(3,Math.round(c.units/max*100))}%"></i></span><span class="bars__v mono">${c.units.toLocaleString("ru-RU")} шт.</span><span class="hint">${c.arts.size} арт.</span></button>`).join("")}</div>`
+    :`<div class="empty"><b>Склад пуст</b>Примите первую поставку — она появится здесь.</div>`;
+}
+$("homeClients").addEventListener("click",e=>{const b=e.target.closest("[data-hclient]");if(!b)return;setTab("stock");$("fClient").value=clients().find(c=>norm(c)===norm(b.dataset.hclient))||"";$("fClient").dispatchEvent(new Event("change"))});
+
 /* ---------- вкладки ---------- */
-const TABS=["rc","mv","pick","inv","stock","prod","cells","log","svc","bill","tariffs","req","team","me","access","admin"];
+const TABS=["home","rc","mv","pick","inv","stock","prod","cells","log","svc","bill","tariffs","req","team","me","access","admin"];
 const BILL_TABS=["bill","tariffs","req"];
-const tabGroup=name=>{const b=$("tabs").querySelector(`[data-tab="${name}"]`);return b?b.dataset.group:""};
+const tabBtn=name=>$("tabs").querySelector(`[data-tab="${name}"]`);
+const tabGroup=name=>{const b=tabBtn(name);return b?b.dataset.group:""};
 function tabAllowed(name){
-  const b=$("tabs").querySelector(`[data-tab="${name}"]`),p=b&&b.dataset.perm;
-  if(!b||!me)return false;if(p==="admin")return isAdmin();if(p==="staff")return me.role!=="client";return can(p);
+  const b=tabBtn(name),p=b&&b.dataset.perm;
+  if(!b||!me)return false;if(p==="admin")return isAdmin();if(p==="staff")return me.role!=="client";if(p==="data")return hasData();return can(p);
 }
-/* разделы сверху, вкладки раздела под ними: у кладовщика без финансов и настроек этих разделов просто нет */
+/* заголовок экрана: что это и зачем — одной строкой */
+const TITLES={home:["Главная","Сводка по складу и быстрые действия"],rc:["Приёмка","Сканируйте товар из поставки"],mv:["Размещение","Из зоны приёмки — по ячейкам"],
+  pick:["Сборка","Лист подбора → маршрут → списание"],inv:["Инвентаризация","Пересчёт ячейки"],stock:["Остатки","Что и где лежит"],prod:["Товары","Справочник и штрихкоды"],
+  cells:["Ячейки","Адреса склада и этикетки"],log:["Журнал","Все движения товара"],svc:["Услуги","Начисления клиентам"],bill:["Счета","Выставление и оплата"],
+  tariffs:["Тарифы","Цены на услуги"],req:["Реквизиты","Данные для счетов и актов"],team:["График и зарплата","Смены, штрафы, премии"],me:["Мой кабинет","График, зарплата и мои операции"],
+  access:["Клиенты и сотрудники","Логины, права, кабинеты клиентов"],admin:["Система","Резервные копии и версия"]};
+/* значки меню: простые линии 24×24, цвет берут от текста */
+const IC={home:'<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',in:'<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v3h16v-3"/>',
+  move:'<path d="M4 12h14"/><path d="m13 7 5 5-5 5"/><path d="M4 5v14"/>',cart:'<path d="M3 4h2l2.5 11h11L21 8H7"/><circle cx="9" cy="19" r="1.5"/><circle cx="17" cy="19" r="1.5"/>',
+  check:'<rect x="4" y="3" width="16" height="18" rx="2"/><path d="m8 12 3 3 5-6"/>',box:'<path d="M12 3 21 7.5v9L12 21l-9-4.5v-9z"/><path d="m3 7.5 9 4.5 9-4.5M12 12v9"/>',
+  tag:'<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>',grid:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  list:'<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h1M3 12h1M3 18h1"/>',plus:'<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
+  doc:'<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/>',rub:'<path d="M8 21V4h6a4 4 0 0 1 0 8H6M6 16h8"/>',
+  bank:'<path d="M3 10h18L12 4z"/><path d="M5 10v8M10 10v8M14 10v8M19 10v8M3 20h18"/>',cal:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  user:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',users:'<circle cx="9" cy="8" r="3.5"/><path d="M2 20c0-3.5 3-5.5 7-5.5s7 2 7 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.8c2.4.6 4 2.3 4 5.2"/>',
+  gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+  menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',more:'<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>'};
+const icon=n=>`<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]||""}</svg>`;
+$("tabs").querySelectorAll("[data-ic]").forEach(b=>b.insertAdjacentHTML("afterbegin",icon(b.dataset.ic)));
+$("menuBtn").innerHTML=icon("menu");
+function sideOpen(on){document.body.classList.toggle("side-open",on);$("scrim").hidden=!on;$("menuBtn").setAttribute("aria-expanded",String(on))}
+$("menuBtn").addEventListener("click",()=>sideOpen(true));
+$("scrim").addEventListener("click",()=>sideOpen(false));
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.body.classList.contains("side-open"))sideOpen(false)});
+/* нижняя панель на телефоне: четыре самых частых экрана этой роли и «Ещё» — всё остальное меню */
+const BOTTOM_PREF=["home","rc","mv","pick","inv","stock","me"];
+function renderBottom(){
+  const list=BOTTOM_PREF.filter(tabAllowed).slice(0,4);
+  $("bottomNav").innerHTML=list.map(t=>`<button type="button" data-tab="${t}" aria-current="${t===tab}">${icon(tabBtn(t).dataset.ic)}<span>${esc(tabBtn(t).textContent.trim())}</span></button>`).join("")
+    +`<button type="button" data-more aria-current="${!list.includes(tab)}">${icon("more")}<span>Ещё</span></button>`;
+}
+$("bottomNav").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;if(b.hasAttribute("data-more"))sideOpen(true);else setTab(b.dataset.tab)});
+/* в меню только то, что разрешено роли: у кладовщика нет финансов и настроек */
 function renderNav(){
-  const g=tabGroup(tab);
-  [...$("groups").children].forEach(b=>{b.hidden=!TABS.some(t=>tabGroup(t)===b.dataset.group&&tabAllowed(t));b.setAttribute("aria-current",String(b.dataset.group===g))});
-  const inGroup=[...$("tabs").children].filter(b=>b.dataset.group===g&&tabAllowed(b.dataset.tab));
-  [...$("tabs").children].forEach(b=>{b.hidden=!inGroup.includes(b);b.setAttribute("aria-selected",String(b.dataset.tab===tab))});
-  $("tabs").hidden=inGroup.length<2;
+  [...$("tabs").children].forEach(el=>{
+    if(el.dataset.tab){el.hidden=!tabAllowed(el.dataset.tab);el.setAttribute("aria-selected",String(el.dataset.tab===tab))}
+    else el.hidden=!TABS.some(t=>tabGroup(t)===el.dataset.group&&tabAllowed(t));
+  });
+  const[t,s]=TITLES[tab]||["",""];$("pageTitle").textContent=t;$("pageSub").textContent=s;document.title=`${t} · Дело в коробке`;
+  renderBottom();
 }
-$("groups").addEventListener("click",e=>{const b=e.target.closest("[data-group]");if(!b)return;
-  const g=b.dataset.group,last=(ls.get("groupTab")||{})[g];
-  setTab(last&&tabGroup(last)===g&&tabAllowed(last)?last:TABS.find(t=>tabGroup(t)===g&&tabAllowed(t)))});
 function setTab(name){
   if(!TABS.includes(name)||!tabAllowed(name))name=TABS.find(tabAllowed)||"me";tab=name;
   TABS.forEach(n=>$("view-"+n).hidden=n!==name);
-  const gt=ls.get("groupTab")||{};gt[tabGroup(name)]=name;ls.set("groupTab",gt);
+  sideOpen(false);window.scrollTo(0,0);
   ls.set("tab",name);renderNav();renderActive();
   if(name==="svc"||BILL_TABS.includes(name))loadBilling();
   if(name==="access")loadAccess();
@@ -1828,7 +1896,7 @@ function setTab(name){
 $("tabs").addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b)setTab(b.dataset.tab)});
 document.addEventListener("click",e=>{const b=e.target.closest("[data-goto]");if(b)setTab(b.dataset.goto)});
 function renderActive(){
-  ({rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,svc:renderSvc,bill:renderBill,tariffs:renderBill,req:renderBill,team:renderTeam,me:renderCabinet,access:renderAccess,admin:()=>{$("appVersion").textContent=appVersion?`Версия приложения ${appVersion}`:""}})[tab]();
+  ({home:renderHome,rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,svc:renderSvc,bill:renderBill,tariffs:renderBill,req:renderBill,team:renderTeam,me:renderCabinet,access:renderAccess,admin:()=>{$("appVersion").textContent=appVersion?`Версия приложения ${appVersion}`:""}})[tab]();
 }
 function setStatus(off){
   let units=0;const cells=new Set();D.stock.forEach(r=>{units+=r.qty;if(r.cell!==BUF)cells.add(r.cell)});
@@ -1884,9 +1952,9 @@ async function boot(){
   me=m.user;document.body.dataset.role=me.role;
   if(me.role==="client"){$("ptWho").textContent=me.name;showPortal(null);connectEvents();return}
   mode="app";
-  $("whoName").textContent=me.name;
+  $("whoName").textContent=me.name;$("whoAv").textContent=(me.name||"?").trim().split(/\s+/).map(w=>w[0]).slice(0,2).join("").toUpperCase();
   $("login").hidden=true;$("portal").hidden=true;$("app").hidden=false;
-  setTab(ls.get("tab")||"rc");
+  setTab(ls.get("tab")||"home");
   if(hasData())load(ALL_PARTS);
   connectEvents();
 }

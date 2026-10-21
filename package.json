@@ -1,6 +1,6 @@
 {
   "name": "sklad-delo-v-korobke",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "description": "Складская система фулфилмента «Дело в коробке»: приёмка, размещение, сборка, инвентаризация, остатки",
   "main": "server.js",

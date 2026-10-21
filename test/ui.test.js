@@ -27,7 +27,7 @@ test("версии файлов в index.html и кэше совпадают с 
 });
 
 test("навигация: у каждой вкладки есть раздел, страница и отрисовка", () => {
-  const groups = new Set([...html.matchAll(/<button type="button" data-group="([a-z]+)"/g)].map(m => m[1]));
+  const groups = new Set([...html.matchAll(/<p class="side__h" data-group="([a-z]+)"/g)].map(m => m[1]).concat("main"));
   const tabs = [...html.matchAll(/data-tab="([a-z]+)" data-group="([a-z]+)"/g)].map(m => ({ tab: m[1], group: m[2] }));
   const list = JSON.parse(js.match(/const TABS=(\[[^\]]+\])/)[1]);
   assert.deepEqual(tabs.map(t => t.tab), list, "порядок вкладок в разметке и в TABS совпадает");

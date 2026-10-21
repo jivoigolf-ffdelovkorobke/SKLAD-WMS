@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Склад">
-<link rel="stylesheet" href="app.css?v=1.4.0">
+<link rel="stylesheet" href="app.css?v=1.5.0">
 </head>
 <body>
 
@@ -38,47 +38,63 @@
 </div>
 
 <!-- ============ ПРИЛОЖЕНИЕ ============ -->
-<div id="app" hidden>
-<header class="band gutter">
-  <div class="band__in">
-    <h1 class="logo"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 36 11v18L20 37 4 29V11z" fill="#FFC800" stroke="#16181D" stroke-width="2"/><path d="M4 11l16 8 16-8M20 19v18" fill="none" stroke="#16181D" stroke-width="2"/><path d="M12 7l16 8v6" fill="none" stroke="#16181D" stroke-width="3"/></svg><span><b>ДЕЛО В КОРОБКЕ</b><small>Склад · ячейки и сборка</small></span></h1>
-    <div class="band__right">
-      <div class="status" id="status">Подключение…</div>
-      <div class="who"><span id="whoName"></span><button type="button" id="logout">Выйти</button></div>
-    </div>
+<div id="app" class="shell" hidden>
+<!-- боковое меню: на компьютере всегда видно, на телефоне выезжает по кнопке «Меню» -->
+<aside class="side" id="side" aria-label="Меню">
+  <div class="side__brand">
+    <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 36 11v18L20 37 4 29V11z" fill="#FFC800" stroke="#16181D" stroke-width="2"/><path d="M4 11l16 8 16-8M20 19v18" fill="none" stroke="#16181D" stroke-width="2"/><path d="M12 7l16 8v6" fill="none" stroke="#16181D" stroke-width="3"/></svg>
+    <span><b>Дело в коробке</b><small>Складская система</small></span>
   </div>
+  <nav class="side__nav" role="tablist" aria-orientation="vertical" id="tabs">
+    <button role="tab" data-tab="home" data-group="main" data-perm="data" data-ic="home" type="button">Главная</button>
+    <p class="side__h" data-group="work">Операции</p>
+    <button role="tab" data-tab="rc" data-group="work" data-perm="ops" data-ic="in" type="button">Приёмка</button>
+    <button role="tab" data-tab="mv" data-group="work" data-perm="ops" data-ic="move" type="button">Размещение</button>
+    <button role="tab" data-tab="pick" data-group="work" data-perm="ops" data-ic="cart" type="button">Сборка</button>
+    <button role="tab" data-tab="inv" data-group="work" data-perm="ops" data-ic="check" type="button">Инвентаризация</button>
+    <p class="side__h" data-group="store">Склад</p>
+    <button role="tab" data-tab="stock" data-group="store" data-perm="stock" data-ic="box" type="button">Остатки</button>
+    <button role="tab" data-tab="prod" data-group="store" data-perm="stock" data-ic="tag" type="button">Товары</button>
+    <button role="tab" data-tab="cells" data-group="store" data-perm="stock" data-ic="grid" type="button">Ячейки</button>
+    <button role="tab" data-tab="log" data-group="store" data-perm="stock" data-ic="list" type="button">Журнал</button>
+    <p class="side__h" data-group="money">Финансы</p>
+    <button role="tab" data-tab="svc" data-group="money" data-perm="services" data-ic="plus" type="button">Услуги</button>
+    <button role="tab" data-tab="bill" data-group="money" data-perm="admin" data-ic="doc" type="button">Счета</button>
+    <button role="tab" data-tab="tariffs" data-group="money" data-perm="admin" data-ic="rub" type="button">Тарифы</button>
+    <button role="tab" data-tab="req" data-group="money" data-perm="admin" data-ic="bank" type="button">Реквизиты</button>
+    <p class="side__h" data-group="people">Команда</p>
+    <button role="tab" data-tab="team" data-group="people" data-perm="team" data-ic="cal" type="button">График и зарплата</button>
+    <button role="tab" data-tab="me" data-group="people" data-perm="staff" data-ic="user" type="button">Мой кабинет</button>
+    <p class="side__h" data-group="settings">Настройки</p>
+    <button role="tab" data-tab="access" data-group="settings" data-perm="admin" data-ic="users" type="button">Клиенты и сотрудники</button>
+    <button role="tab" data-tab="admin" data-group="settings" data-perm="admin" data-ic="gear" type="button">Система</button>
+  </nav>
+  <div class="side__foot">
+    <div class="status" id="status">Подключение…</div>
+    <div class="who"><span class="who__av" id="whoAv"></span><span id="whoName"></span><button type="button" id="logout">Выйти</button></div>
+  </div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+
+<div class="main">
+<header class="topbar gutter">
+  <button class="topbar__menu" id="menuBtn" type="button" aria-label="Открыть меню" aria-controls="side" aria-expanded="false"></button>
+  <div class="topbar__t"><h1 id="pageTitle">Склад</h1><p id="pageSub"></p></div>
 </header>
 
 <div class="wrap gutter">
   <div class="offline" id="offline" hidden>Нет связи с сервером. Изменения не сохранятся, пока связь не вернётся.</div>
 
-  <div class="navbar">
-    <nav class="groups" id="groups" aria-label="Разделы">
-      <button type="button" data-group="work">Работа</button>
-      <button type="button" data-group="store">Склад</button>
-      <button type="button" data-group="money">Финансы</button>
-      <button type="button" data-group="people">Команда</button>
-      <button type="button" data-group="settings">Настройки</button>
-    </nav>
-    <nav class="tabs" role="tablist" id="tabs">
-      <button role="tab" data-tab="rc" data-group="work" data-perm="ops" type="button">Приёмка</button>
-      <button role="tab" data-tab="mv" data-group="work" data-perm="ops" type="button">Размещение</button>
-      <button role="tab" data-tab="pick" data-group="work" data-perm="ops" type="button">Сборка</button>
-      <button role="tab" data-tab="inv" data-group="work" data-perm="ops" type="button">Инвентаризация</button>
-      <button role="tab" data-tab="stock" data-group="store" data-perm="stock" type="button">Остатки</button>
-      <button role="tab" data-tab="prod" data-group="store" data-perm="stock" type="button">Товары</button>
-      <button role="tab" data-tab="cells" data-group="store" data-perm="stock" type="button">Ячейки</button>
-      <button role="tab" data-tab="log" data-group="store" data-perm="stock" type="button">Журнал</button>
-      <button role="tab" data-tab="svc" data-group="money" data-perm="services" type="button">Услуги</button>
-      <button role="tab" data-tab="bill" data-group="money" data-perm="admin" type="button">Счета</button>
-      <button role="tab" data-tab="tariffs" data-group="money" data-perm="admin" type="button">Тарифы</button>
-      <button role="tab" data-tab="req" data-group="money" data-perm="admin" type="button">Реквизиты</button>
-      <button role="tab" data-tab="team" data-group="people" data-perm="team" type="button">График и зарплата</button>
-      <button role="tab" data-tab="me" data-group="people" data-perm="staff" type="button">Мой кабинет</button>
-      <button role="tab" data-tab="access" data-group="settings" data-perm="admin" type="button">Клиенты и сотрудники</button>
-      <button role="tab" data-tab="admin" data-group="settings" data-perm="admin" type="button">Система</button>
-    </nav>
-  </div>
+  <!-- ============ ГЛАВНАЯ ============ -->
+  <section class="view" id="view-home" hidden>
+    <div class="quick" id="homeQuick"></div>
+    <div class="kv kv-lg" id="homeKv"></div>
+    <div class="cols">
+      <div class="panel"><h2>Что сделать</h2><div id="homeTodo"></div></div>
+      <div class="panel"><div class="row between"><h2>Последние операции</h2><button class="btn sm ghost" type="button" data-goto="log">Весь журнал</button></div><div id="homeOps"></div></div>
+    </div>
+    <div class="panel"><div class="row between"><h2>Клиенты на складе</h2><button class="btn sm ghost" type="button" data-goto="stock">Все остатки</button></div><div id="homeClients"></div></div>
+  </section>
 
   <!-- ============ ПРИЁМКА ============ -->
   <section class="view" id="view-rc" hidden>
@@ -622,6 +638,9 @@
   </section>
 </div>
 </div>
+<!-- телефон и ТСД: главные операции всегда под большим пальцем -->
+<nav class="bottom" id="bottomNav" aria-label="Быстрые разделы"></nav>
+</div>
 
 <!-- ============ КАБИНЕТ КЛИЕНТА ============ -->
 <div id="portal" hidden>
@@ -731,6 +750,6 @@
 <script src="vendor/xlsx.full.min.js" defer></script>
 <script src="vendor/JsBarcode.all.min.js" defer></script>
 <script src="vendor/zxing.min.js" defer></script>
-<script src="app.js?v=1.4.0" defer></script>
+<script src="app.js?v=1.5.0" defer></script>
 </body>
 </html>
