@@ -438,6 +438,7 @@ route("POST", "/api/receive", "perm:ops", ({ body, user }) => {
   const lines = (Array.isArray(body.lines) ? body.lines : []).map(l => ({
     article: str(l.article), name: str(l.name), barcode: str(l.barcode, 64),
     expected: l.expected == null || l.expected === "" ? null : int(l.expected), got: int(l.got) || 0,
+    cell: normCell(l.cell) || "",
   })).filter(l => l.article);
   if (!lines.some(l => l.got > 0)) throw bad("Нечего принимать");
   if (lines.some(l => l.got < 0)) throw bad("Количество не может быть отрицательным");
@@ -447,8 +448,11 @@ route("POST", "/api/receive", "perm:ops", ({ body, user }) => {
     for (const l of lines) {
       upsertProduct(client, l.article, l.name, l.barcode ? [l.barcode] : [], { skipConflicts: true });
       if (l.got > 0) {
-        addStock(cell, client, l.article, l.name, l.got);
-        log(user, { type: "receive", client, article: l.article, name: l.name, qty: l.got, cell, doc });
+        // строка из списка с ячейкой — товар сразу ложится в неё, без зоны приёмки
+        const to = l.cell || cell;
+        if (to !== cell) addCell(to);
+        addStock(to, client, l.article, l.name, l.got);
+        log(user, { type: "receive", client, article: l.article, name: l.name, qty: l.got, cell: to, doc });
         units += l.got;
       }
     }

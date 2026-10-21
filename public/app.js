@@ -408,9 +408,12 @@ function outputLabels(labels,size,name,asFile){
 let rc=ls.get("rc")||{client:"",doc:"",cell:BUF,lines:[],unknown:null};
 let rcLast=null;
 const rcSave=()=>ls.set("rc",rc);
-function rcFind(code){const raw=String(code).trim(),n=norm(code);return rc.lines.find(l=>norm(l.article)===n||(l.barcode&&l.barcode===raw))}
+/* один артикул может ехать в несколько ячеек — сначала заполняем строку, где ещё не всё принято */
+const rcOpen=list=>list.find(l=>l.expected!=null&&l.got<l.expected)||list[0];
+function rcFind(code){const raw=String(code).trim(),n=norm(code);return rcOpen(rc.lines.filter(l=>norm(l.article)===n||(l.barcode&&l.barcode===raw)))}
+const rcHasCells=()=>rc.lines.some(l=>l.cell);
 function rcAdd(it,q,barcode){
-  let l=rc.lines.find(x=>norm(x.article)===norm(it.article));
+  let l=rcOpen(rc.lines.filter(x=>norm(x.article)===norm(it.article)));
   if(!l){l={article:it.article,name:it.name||"",barcode:barcode||"",expected:null,got:0};rc.lines.push(l)}
   if(barcode&&!l.barcode)l.barcode=barcode;
   l.got+=q;rc.last=l.article;rcSave();
@@ -448,17 +451,18 @@ function renderRc(){
   $("rcState").textContent=has?`Принято ${got}${exp?" из "+exp:""} шт.`:"Новая";
   $("rcState").className="chip"+(has?(exp&&got===exp?" ok":" info"):"");
   const c=$("rcCommit");c.disabled=!rc.lines.some(l=>l.got>0);
-  c.textContent=c.dataset.confirm?`Подтвердить: ${got} шт. в ${rc.cell||BUF}`:"Завершить приёмку";c.classList.toggle("danger",!!c.dataset.confirm);c.classList.toggle("primary",!c.dataset.confirm);
+  c.textContent=c.dataset.confirm?`Подтвердить: ${got} шт. ${rcHasCells()?"по ячейкам из списка":"в "+(rc.cell||BUF)}`:"Завершить приёмку";
+  $("rcAll").hidden=!rc.lines.some(l=>l.expected!=null&&l.got<l.expected);c.classList.toggle("danger",!!c.dataset.confirm);c.classList.toggle("primary",!c.dataset.confirm);
   renderRcHist();
   if(!has){box.innerHTML=`<div class="empty"><b>Сканируйте товар из коробки</b>Каждый скан добавляет указанное количество. Можно ввести артикул вручную и нажать OK.</div>`;return}
   const lines=[...rc.lines].sort((a,b)=>(a.article===rc.last?-1:b.article===rc.last?1:0));
-  box.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Артикул</th><th>Наименование</th><th class="num">Ожидалось</th><th class="num">Принято</th><th>Статус</th></tr></thead><tbody>${lines.map(l=>{
+  box.innerHTML=`<div class="table-wrap"><table><thead><tr>${rcHasCells()?"<th>Ячейка</th>":""}<th>Артикул</th><th>Наименование</th><th class="num">Ожидалось</th><th class="num">Принято</th><th>Статус</th></tr></thead><tbody>${lines.map(l=>{
     const i=rc.lines.indexOf(l);let st;
     if(l.expected==null)st=`<span class="chip warn">нет в списке</span>`;
     else if(l.got===l.expected)st=`<span class="chip ok">сходится</span>`;
     else if(l.got>l.expected)st=`<span class="chip bad">излишек ${l.got-l.expected}</span>`;
     else st=`<span class="chip${l.got?" warn":""}">недостача ${l.expected-l.got}</span>`;
-    return`<tr data-i="${i}"${l.article===rc.last?' class="hl"':""}><td class="mono wrap-any">${esc(l.article)}${l.barcode?`<br><span class="hint">${esc(l.barcode)}</span>`:""}</td><td>${esc(l.name)}</td><td class="num mono">${l.expected??"—"}</td>
+    return`<tr data-i="${i}"${l.article===rc.last?' class="hl"':""}>${rcHasCells()?`<td>${l.cell?addrHtml(l.cell):addrHtml(rc.cell||BUF)}</td>`:""}<td class="mono wrap-any">${esc(l.article)}${l.barcode?`<br><span class="hint">${esc(l.barcode)}</span>`:""}</td><td>${esc(l.name)}</td><td class="num mono">${l.expected??"—"}</td>
     <td class="num"><span class="stepper"><button type="button" data-d="-1" aria-label="Минус один">−</button><span>${l.got}</span><button type="button" data-d="1" aria-label="Плюс один">+</button></span></td><td>${st}</td></tr>`}).join("")}</tbody></table></div>`;
 }
 function renderRcHist(){
@@ -492,16 +496,22 @@ $("rcFile").addEventListener("change",async e=>{
   const file=e.target.files[0];e.target.value="";if(!file)return;
   try{const m=await readMatrix(file);const d=detect(m,["art"]);
     if(d.cols.art<0){fail("Не нашёл столбец с артикулом");return}
-    let n=0;
-    for(let r=d.hdr+1;r<m.length;r++){const row=m[r]||[];const art=cellv(row,d.cols.art);if(!art)continue;
+    // ячейку и клиента часто пишут один раз над группой товаров — протягиваем вниз
+    let n=0,cell="",client="";const clients=new Set();
+    for(let r=d.hdr+1;r<m.length;r++){const row=m[r]||[];
+      const c=d.cols.cell>=0?normCell(row[d.cols.cell]):"",cl=cellv(row,d.cols.client);if(c)cell=c;if(cl)client=cl;
+      const art=cellv(row,d.cols.art);if(!art)continue;
       const q=d.cols.qty>=0?num(row[d.cols.qty]):1;if(!(q>0))continue;
-      let l=rc.lines.find(x=>norm(x.article)===norm(art));
-      if(!l){l={article:art,name:cellv(row,d.cols.name),barcode:cellv(row,d.cols.bc),expected:0,got:0};rc.lines.push(l)}
-      l.expected=(l.expected||0)+Math.round(q);if(!l.barcode)l.barcode=cellv(row,d.cols.bc);n++}
+      if(client)clients.add(client);
+      let l=rc.lines.find(x=>norm(x.article)===norm(art)&&(x.cell||"")===cell);
+      if(!l){l={article:art,name:cellv(row,d.cols.name),barcode:cellv(row,d.cols.bc).replace(/\.0+$/,""),expected:0,got:0,cell};rc.lines.push(l)}
+      l.expected=(l.expected||0)+Math.round(q);if(!l.barcode)l.barcode=cellv(row,d.cols.bc).replace(/\.0+$/,"");n++}
     if(!rc.doc)rc.doc=file.name.replace(/\.[^.]+$/,"");
-    rcSave();renderRc();okb(`Ожидаемых позиций: ${n}`);
+    if(!rc.client&&clients.size){const names=[...clients].sort((a,b)=>b.length-a.length);rc.client=names[0]}
+    rcSave();renderRc();okb(`Ожидаемых позиций: ${n}${rcHasCells()?" · товар ляжет сразу по ячейкам из файла":""}`);
   }catch(err){fail("Не удалось прочитать файл: "+(err.message||err))}
 });
+$("rcAll").addEventListener("click",()=>{rc.lines.forEach(l=>{if(l.expected!=null&&l.got<l.expected)l.got=l.expected});delete $("rcCommit").dataset.confirm;rcSave();renderRc();okb("Всё по списку отмечено принятым")});
 $("rcCommit").addEventListener("click",async()=>{
   const c=$("rcCommit");
   rc.client=$("rcClient").value.trim();rc.doc=$("rcDoc").value.trim();rc.cell=normCell(fixLayout($("rcCell").value))||BUF;
@@ -511,7 +521,7 @@ $("rcCommit").addEventListener("click",async()=>{
     fail(`Похоже на клиента «${sim}». Если это он, выберите его в поле «Клиент», иначе товар попадёт в отдельный кабинет. Нажмите ещё раз, чтобы принять как «${rc.client}».`);return}
   if(!c.dataset.confirm){c.dataset.confirm="1";renderRc();return}
   delete c.dataset.confirm;delete c.dataset.simFor;
-  const body={client:rc.client,doc:rc.doc,cell:rc.cell,lines:rc.lines.map(l=>({article:l.article,name:l.name,barcode:l.barcode||"",expected:l.expected,got:l.got}))};
+  const body={client:rc.client,doc:rc.doc,cell:rc.cell,lines:rc.lines.map(l=>({article:l.article,name:l.name,barcode:l.barcode||"",expected:l.expected,got:l.got,cell:l.cell||""}))};
   const res=await run(c,"Сохраняю…",()=>api("POST","/api/receive",body));
   if(!res){renderRc();return}
   rcLast={...body,ts:new Date().toISOString(),user_name:me.name};

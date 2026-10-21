@@ -216,3 +216,18 @@ test("статика и SPA", async () => {
   assert.equal(r.status, 200);
   assert.match(r.headers.get("content-type"), /text\/html/);
 });
+
+test("приёмка по списку с ячейками: товар сразу ложится в ячейки", async () => {
+  const r = await admin("POST", "/api/receive", {
+    client: "ИП Ячейкин", doc: "раскладка", cell: "", lines: [
+      { article: "Y-1", name: "Берет", expected: 5, got: 5, cell: "В-01-1-02" },
+      { article: "Y-1", name: "Берет", expected: 3, got: 3, cell: "D-02-1-03" },
+      { article: "Y-2", name: "Кепка", got: 2 },
+    ],
+  });
+  assert.equal(r.ok, true);
+  const d = await admin("GET", "/api/data");
+  const mine = d.stock.filter(s => s.client === "ИП Ячейкин").map(s => `${s.cell}:${s.article}:${s.qty}`).sort();
+  assert.deepEqual(mine, ["B-01-1-02:Y-1:5", "D-02-1-03:Y-1:3", "PRIEM:Y-2:2"]);
+  assert.ok(d.cells.includes("B-01-1-02") && d.cells.includes("D-02-1-03"));
+});
