@@ -17,6 +17,8 @@ function fmtTs(iso){const d=new Date(iso);if(isNaN(d))return"";const p=n=>String
 const addrHtml=(c,big)=>`<span class="addr${big?" big":""}${normCell(c)===BUF?" buf":""}">${esc(c)}</span>`;
 const today=()=>new Date().toISOString().slice(0,10);
 const isAdmin=()=>me&&me.role==="admin";
+const can=p=>!!me&&(me.role==="admin"||(me.perms||[]).includes(p));
+const hasData=()=>can("ops")||can("stock");
 
 /* ---------- состояние ---------- */
 let me=null,live=false,appVersion="";
@@ -58,8 +60,9 @@ let mode="app";
 const ALL_PARTS=["stock","products","cells","ops","receipts"];
 function reloadAll(parts){
   if(mode==="portal"){loadPortal();return}
-  const data=(parts||ALL_PARTS).filter(p=>p!=="billing");if(data.length)load(data);
+  const data=(parts||ALL_PARTS).filter(p=>ALL_PARTS.includes(p));if(data.length&&hasData())load(data);
   if((tab==="svc"||tab==="bill")&&(!parts||parts.includes("billing")))loadBilling();
+  if(!parts||parts.includes("team")){if(tab==="team")loadTeam();if(tab==="me")loadCabinet()}
 }
 let es=null;
 function connectEvents(){
@@ -324,11 +327,12 @@ const PAT={
   qty:["количество","кол-во","кол.","qty","quantity"],
   name:["наименование","название","товар","name"],
   cell:["ячейка","адрес","место"],
-  client:["клиент","продавец","селлер","владелец"]
+  client:["клиент","продавец","селлер","владелец","организация","ип"]
 };
 function findCol(header,key,taken){
   const h=header.map(norm);
-  for(const p of PAT[key]){const i=h.findIndex((v,idx)=>v&&!taken.includes(idx)&&(v===p||v.includes(p)));if(i>=0)return i}
+  // короткие названия («ип», «шк») — только целиком, иначе «ип» найдётся внутри «тип»
+  for(const p of PAT[key]){const i=h.findIndex((v,idx)=>v&&!taken.includes(idx)&&(v===p||(p.length>3&&v.includes(p))));if(i>=0)return i}
   return -1;
 }
 function detect(matrix,need){
@@ -829,22 +833,89 @@ $("stockTable").addEventListener("click",async e=>{
 });
 $("q").addEventListener("input",renderStock);$("fClient").addEventListener("change",renderStock);
 $("stockMode").addEventListener("click",e=>{const b=e.target.closest("[data-m]");if(!b)return;stockMode=b.dataset.m;[...$("stockMode").children].forEach(x=>x.setAttribute("aria-pressed",String(x===b)));renderStock()});
+/* Раскладка из Excel. Понимает и плоскую таблицу, и складской формат, где ячейка написана один раз,
+   а товары под ней идут строками с пустой ячейкой. Несколько файлов можно выбрать сразу. */
+let imp=null;
+function parseLayout(m,file){
+  const d=detect(m,["art"]);
+  if(d.cols.cell<0||d.cols.art<0)throw new Error(`«${file}»: не нашёл столбцы «Ячейка» и «Артикул». Скачайте шаблон и заполните по нему.`);
+  const rows=[];let bad=0,cell="",client="";
+  for(let r=d.hdr+1;r<m.length;r++){const row=m[r]||[];
+    const c=normCell(row[d.cols.cell]),art=cellv(row,d.cols.art),cl=cellv(row,d.cols.client);
+    if(c)cell=c;if(cl)client=cl;
+    if(!art)continue;
+    const q=d.cols.qty>=0?num(row[d.cols.qty]):1;
+    if(!cell||!(q>0)){bad++;continue}
+    rows.push({cell,client,article:art,name:cellv(row,d.cols.name),qty:Math.round(q),barcode:cellv(row,d.cols.bc).replace(/\.0+$/,"")});
+  }
+  return{rows,bad};
+}
+function renderImport(){
+  const msg=$("importMsg");if(!imp){msg.innerHTML="";return}
+  const{rows,bad,files}=imp,units=rows.reduce((a,r)=>a+r.qty,0),cells=new Set(rows.map(r=>r.cell));
+  const cl=new Map();rows.forEach(r=>{const k=norm(r.client);cl.set(k,{name:r.client||"(не указан)",n:(cl.get(k)||{n:0}).n+1})});
+  // один штрихкод у разных артикулов — почти всегда опечатка в таблице
+  const bcArts=new Map();rows.forEach(r=>{if(!r.barcode)return;const x=bcArts.get(r.barcode)||new Set();x.add(r.article);bcArts.set(r.barcode,x)});
+  const conflicts=[...bcArts].filter(([,a])=>a.size>1);
+  const known=new Set(clients().map(norm));
+  msg.innerHTML=`<div class="notice warn imp">
+    <b>Проверьте перед загрузкой</b>
+    <div>${files.map(esc).join(", ")}: строк ${rows.length}, единиц ${units}, ячеек ${cells.size}${bad?`. Без ячейки или количества (не загрузятся): ${bad}`:""}.</div>
+    <div>Клиенты в файле: ${[...cl.values()].map(c=>`${esc(c.name)} <span class="hint">(${c.n})</span>`).join(", ")}</div>
+    ${conflicts.length?`<div class="bad-text">Один штрихкод у разных артикулов: ${conflicts.map(([bc,a])=>`${esc(bc)} → ${[...a].map(esc).join(" / ")}`).join("; ")}. Штрихкод достанется первому артикулу.</div>`:""}
+    <label class="switch"><input type="checkbox" id="impOne"${imp.one?" checked":""}> Записать всё на одного клиента</label>
+    <input id="impClient" list="clientList" value="${esc(imp.client)}" placeholder="Название клиента, как в кабинете"${imp.one?"":" hidden"}>
+    ${imp.one&&imp.client&&!known.has(norm(imp.client))?`<span class="hint">Новый клиент — появится после загрузки.</span>`:""}
+    <label class="switch"><input type="checkbox" id="impCab"${imp.cab?" checked":""}> Завести карточку клиента и выдать логин в личный кабинет</label>
+    <div class="row"><button class="btn primary" type="button" id="impGo">Загрузить ${rows.length} ${plural(rows.length,"строку","строки","строк")}</button><button class="btn ghost" type="button" id="impCancel">Отмена</button></div>
+  </div>`;
+}
 $("stockFile").addEventListener("change",async e=>{
-  const file=e.target.files[0];e.target.value="";if(!file)return;const msg=$("importMsg");
+  const files=[...e.target.files];e.target.value="";if(!files.length)return;const msg=$("importMsg");
   try{
-    const m=await readMatrix(file);const d=detect(m,["cell","art"]);
-    if(d.cols.cell<0||d.cols.art<0){msg.innerHTML=`<div class="notice bad">Не нашёл столбцы «Ячейка» и «Артикул». Скачайте шаблон и заполните по нему.</div>`;return}
-    const rows=[];let bad=0;
-    for(let r=d.hdr+1;r<m.length;r++){const row=m[r]||[];const cell=normCell(row[d.cols.cell]),art=cellv(row,d.cols.art);
-      if(!cell&&!art)continue;
-      const q=d.cols.qty>=0?num(row[d.cols.qty]):1;
-      if(!cell||!art||!(q>0)){bad++;continue}
-      rows.push({cell,client:cellv(row,d.cols.client),article:art,name:cellv(row,d.cols.name),qty:Math.round(q),barcode:cellv(row,d.cols.bc)})}
-    msg.innerHTML=`<div class="notice warn">Загружаю ${rows.length} строк…</div>`;
-    const res=await api("POST","/api/import-stock",{file:file.name,rows});
-    await load(["stock","products","ops","cells"]);
-    msg.innerHTML=`<div class="notice ok">Добавлено строк: ${res.ok}, единиц: ${res.units}${bad?`. Пропущено (нет ячейки, артикула или количества): ${bad}`:""}${res.skippedBc?`. Штрихкодов пропущено (уже заняты другими товарами): ${res.skippedBc}`:""}.</div>`;
-  }catch(err){msg.innerHTML=`<div class="notice bad">${esc(err.message||err)}</div>`}
+    let rows=[],bad=0;
+    for(const f of files){const r=parseLayout(await readMatrix(f),f.name);rows=rows.concat(r.rows);bad+=r.bad}
+    if(!rows.length)throw new Error("В файле не нашлось строк с артикулом и количеством");
+    // «ИП Чипчиков» и «ИП Чипчиков Р.» — один клиент: предлагаем самое полное написание
+    const names=[...new Set(rows.map(r=>r.client).filter(Boolean))].sort((a,b)=>b.length-a.length);
+    const same=names.length>0&&names.every(n=>looseKey(names[0].replace(/[.\s]+$/,"")).startsWith(looseKey(n.replace(/[.\s]+$/,""))));
+    imp={rows,bad,files:files.map(f=>f.name),one:same&&(names.length>1||rows.some(r=>!r.client)),client:same?names[0]:"",cab:false};
+    renderImport();
+  }catch(err){imp=null;msg.innerHTML=`<div class="notice bad">${esc(err.message||err)}</div>`}
+});
+$("importMsg").addEventListener("change",e=>{if(!imp)return;
+  if(e.target.id==="impOne"){imp.one=e.target.checked;renderImport()}
+  if(e.target.id==="impCab")imp.cab=e.target.checked;
+  if(e.target.id==="impClient"){imp.client=e.target.value.trim();renderImport()}});
+$("importMsg").addEventListener("click",async e=>{
+  if(!imp)return;
+  if(e.target.id==="impCancel"){imp=null;renderImport();return}
+  if(e.target.id!=="impGo")return;
+  if(imp.one)imp.client=$("impClient").value.trim();
+  if(imp.one&&!imp.client){fail("Укажите клиента");$("impClient").focus();return}
+  const rows=imp.one?imp.rows.map(r=>({...r,client:imp.client})):imp.rows;
+  if(rows.some(r=>!r.client)){fail("У части строк не указан клиент. Включите «Записать всё на одного клиента».");return}
+  const res=await run(e.target,"Загружаю…",()=>api("POST","/api/import-stock",{file:imp.files.join(", "),rows}));
+  if(!res)return;
+  const done=imp;imp=null;
+  let extra="";
+  if(done.cab){
+    const names=[...new Set(rows.map(r=>r.client))];
+    for(const name of names){
+      try{
+        await api("POST","/api/clients",{name});
+        if(!AC.users.length)AC.users=(await api("GET","/api/users")).users;
+        if(AC.users.some(u=>u.role==="client"&&norm(u.client)===norm(name))){extra+=`<div>У «${esc(name)}» логин уже есть — новый не выдавал.</div>`;continue}
+        const login=suggestLogin(name),pass=genPass();
+        await api("POST","/api/users",{name,login,password:pass,role:"client",client:name});
+        AC.users.push({login,role:"client",client:name});
+        extra+=`<div>Кабинет «${esc(name)}»:</div>${credHtml({login,pass})}`;
+      }catch(err){extra+=`<div class="bad-text">${esc(name)}: ${esc(err.message)}</div>`}
+    }
+  }
+  await load(["stock","products","ops","cells"]);
+  $("importMsg").innerHTML=`<div class="notice ok">Добавлено строк: ${res.ok}, единиц: ${res.units}${res.skippedBc?`. Штрихкодов пропущено (уже заняты другими товарами): ${res.skippedBc}`:""}.${extra}</div>`;
+  okb("Раскладка загружена");
 });
 $("tplBtn").addEventListener("click",()=>saveXlsx("raskladka-shablon.xlsx",[["Ячейка","Клиент","Артикул","Наименование","Количество","Штрихкод"],["A-01-1-01","ИП Пример","ART-001","Пример товара",10,"4600000000001"]],"Раскладка"));
 $("exportBtn").addEventListener("click",()=>{const rows=routeSort([...D.stock.values()],false);
@@ -990,58 +1061,301 @@ $("lExport").addEventListener("click",()=>saveXlsx(`zhurnal-${today()}.xlsx`,[["
   ...logRows().map(o=>[fmtTs(o.ts),OPN[o.type]||o.type,o.client,o.article,o.name,o.from_cell,o.cell,o.qty,o.user_name||"",o.doc,o.note])],"Журнал"));
 
 /* ======================================================
-   УПРАВЛЕНИЕ (администратор)
+   ДОСТУПЫ (администратор): клиенты с подразделениями и логинами, сотрудники с правами
    ====================================================== */
-let users=[];
-async function loadUsers(){try{users=(await api("GET","/api/users")).users;renderUsers()}catch(e){fail(e.message)}}
-function renderUsers(){
-  const box=$("uTable");
-  $("appVersion").textContent=appVersion?`Версия приложения ${appVersion}`:"";
-  const pv=$("pvClient"),prev=pv.value;pv.innerHTML=clients().map(c=>`<option${c===prev?" selected":""}>${esc(c)}</option>`).join("")||`<option value="">Клиентов пока нет</option>`;
-  $("pvOpen").disabled=!clients().length;
-  if(!users.length){box.innerHTML=`<p class="hint">Загружаю…</p>`;return}
-  const known=new Set(clients().map(norm));
-  const roleSel=(u,val)=>`<select data-role id="ur_${u.id}" style="width:auto;min-height:36px;padding:4px 8px">${[["worker","Кладовщик"],["admin","Администратор"],["client","Клиент"]].map(([v,t])=>`<option value="${v}"${val===v?" selected":""}>${t}</option>`).join("")}</select>`;
-  box.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Имя</th><th>Логин</th><th>Роль и компания</th><th>Был в сети</th><th>Новый пароль</th><th></th></tr></thead><tbody>${users.map(u=>{
-    const asClient=u.role==="client"||pendingClient.has(u.id);
-    const sim=asClient&&u.client&&!known.has(norm(u.client))?similarClient(u.client):null;
-    return`<tr data-id="${u.id}"${u.active?"":' style="opacity:.55"'}>
-    <td><b>${esc(u.name)}</b>${u.id===me.id?' <span class="chip info">это вы</span>':""}</td><td class="mono">${esc(u.login)}</td>
-    <td><div class="row" style="gap:6px">${roleSel(u,asClient?"client":u.role)}${asClient?`<input data-client id="uc_${u.id}" list="clientList" value="${esc(u.client)}" placeholder="компания" style="min-width:170px;flex:1 1 170px;min-height:36px;padding:4px 8px"><button class="btn sm" data-saveclient type="button">Сохранить</button>`:""}</div>
-    ${asClient&&u.client&&!known.has(norm(u.client))?`<span class="chip warn">${sim?`нет товаров с таким клиентом, похоже на «${esc(sim)}»`:"нет товаров с таким клиентом"}</span>`:""}</td>
-    <td class="mono">${u.last_seen?fmtTs(u.last_seen):"—"}</td>
-    <td><span class="row" style="flex-wrap:nowrap"><input id="up_${u.id}" placeholder="не короче 6" style="min-width:120px;min-height:36px;padding:4px 8px"><button class="btn sm" data-pass type="button">Сменить</button></span></td>
-    <td class="num">${u.id===me.id?"":`<button class="btn sm ${u.active?"ghost":"primary"}" data-active type="button">${u.active?"Отключить":"Включить"}</button>`}</td></tr>`}).join("")}</tbody></table></div>`;
+const PERM_NAMES={ops:"Операции",stock:"Остатки и товары",services:"Услуги",team:"Руководитель"};
+const AC={tab:ls.get("acTab")==="staff"?"staff":"clients",clients:[],banks:[],users:[],open:new Set(),cred:null,editCk:null};
+const PW_ABC="abcdefghjkmnpqrstuvwxyz23456789";
+function genPass(n=8){const a=new Uint32Array(n);crypto.getRandomValues(a);return[...a].map(x=>PW_ABC[x%PW_ABC.length]).join("")}
+const TR={а:"a",б:"b",в:"v",г:"g",д:"d",е:"e",ё:"e",ж:"zh",з:"z",и:"i",й:"y",к:"k",л:"l",м:"m",н:"n",о:"o",п:"p",р:"r",с:"s",т:"t",у:"u",ф:"f",х:"h",ц:"c",ч:"ch",ш:"sh",щ:"sch",ы:"y",э:"e",ю:"yu",я:"ya"};
+/* логин из названия: «ООО "Ромашка"» → romashka */
+function suggestLogin(...parts){
+  const t=parts.filter(Boolean).map(p=>norm(p).replace(/^(ооо|оао|зао|пао|ао|ип)\s+/,"").split("").map(c=>TR[c]??c).join("").replace(/[^a-z0-9]+/g,"")).filter(Boolean).join(".");
+  let base=t.slice(0,24)||"client";if(base.length<3)base+="123".slice(base.length);
+  const taken=new Set(AC.users.map(u=>u.login));let l=base,i=2;while(taken.has(l))l=base+i++;return l;
 }
-/* сотрудника переводят в клиенты в два шага: выбрать роль «Клиент», указать компанию, «Сохранить» */
-const pendingClient=new Set();
-async function updUser(body,msg){const res=await run(null,"",()=>api("POST","/api/users/update",body));if(res){pendingClient.delete(body.id);okb(msg);await loadUsers()}else renderUsers()}
-$("uTable").addEventListener("change",e=>{
-  const s=e.target.closest("select[data-role]");if(!s)return;const id=+s.closest("tr").dataset.id;const u=users.find(x=>x.id===id);
-  if(s.value==="client"){if(u.role!=="client"){pendingClient.add(id);renderUsers();const i=$("uc_"+id);i&&i.focus()}return}
-  pendingClient.delete(id);updUser({id,role:s.value},u.role==="client"?`${u.name} теперь сотрудник склада`:"Роль изменена");
+function copyText(text){
+  if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(text).then(()=>okb("Скопировано"),()=>fail("Не удалось скопировать — выделите текст вручную"));
+  const t=document.createElement("textarea");t.value=text;document.body.appendChild(t);t.select();try{document.execCommand("copy");okb("Скопировано")}catch(e){fail("Выделите текст вручную")}t.remove();
+}
+const credText=(login,pass)=>`Вход: ${location.origin}\nЛогин: ${login}\nПароль: ${pass}`;
+const credHtml=c=>`<div class="cred"><div class="mono">Логин: <b>${esc(c.login)}</b><br>Пароль: <b>${esc(c.pass)}</b></div>
+  <button class="btn sm" type="button" data-copy="${esc(credText(c.login,c.pass))}">Скопировать для отправки</button>
+  <span class="hint">Пароль показан один раз — сохраните или отправьте его сейчас.</span></div>`;
+document.addEventListener("click",e=>{const b=e.target.closest("[data-copy]");if(b)copyText(b.dataset.copy)});
+const bankLabel=b=>`${b.title||b.bank_name} ··${String(b.account).slice(-4)}${b.is_default?" (основной)":""}`;
+const bankOpts=(sel,none)=>`<option value="">${none}</option>`+AC.banks.map(b=>`<option value="${b.id}"${b.id===sel?" selected":""}>${esc(bankLabel(b))}</option>`).join("");
+
+let acLoading=null;
+async function loadAccess(){
+  if(acLoading)return acLoading;
+  acLoading=(async()=>{try{const[c,u]=await Promise.all([api("GET","/api/clients"),api("GET","/api/users")]);
+    AC.clients=c.clients;AC.banks=c.banks;AC.users=u.users;if(tab==="access")renderAccess()}catch(e){fail(e.message)}finally{acLoading=null}})();
+  return acLoading;
+}
+function renderAccess(){
+  [...$("acSeg").children].forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.ac===AC.tab)));
+  $("acClientsBox").hidden=AC.tab!=="clients";$("acStaffBox").hidden=AC.tab!=="staff";
+  $("deptList").innerHTML=[...new Set(AC.users.map(u=>u.dept).filter(Boolean))].sort().map(d=>`<option value="${esc(d)}">`).join("");
+  if(!$("acClientForm").hidden&&!$("acBank").options.length)$("acBank").innerHTML=bankOpts(null,"Основной счёт склада");
+  if(AC.tab==="clients")renderAcClients();else renderAcStaff();
+}
+$("acSeg").addEventListener("click",e=>{const b=e.target.closest("[data-ac]");if(!b)return;AC.tab=b.dataset.ac;ls.set("acTab",AC.tab);renderAccess()});
+
+/* --- клиенты --- */
+function renderAcClients(){
+  const q=norm($("acQ").value),box=$("acClients");
+  const list=AC.clients.filter(c=>!q||[c.name,c.inn].some(v=>norm(v).includes(q))||c.accounts.some(a=>a.login.includes(q)));
+  if(!AC.clients.length){box.innerHTML=`<p class="hint">Загружаю…</p>`;return}
+  if(!list.length){box.innerHTML=`<div class="empty"><b>Ничего не найдено</b>Измените поиск или добавьте нового клиента.</div>`;return}
+  box.innerHTML=list.map(c=>{
+    const subName=id=>(c.subs.find(s=>s.id===id)||{}).name||"";
+    const subOpts=sel=>`<option value="">Весь клиент</option>`+c.subs.map(s=>`<option value="${s.id}"${s.id===sel?" selected":""}>${esc(s.name)}</option>`).join("");
+    const cred=AC.cred&&AC.cred.ck===c.ckey?credHtml(AC.cred):"";
+    return`<details class="card" data-ck="${esc(c.ckey)}"${AC.open.has(c.ckey)?" open":""}>
+    <summary><span class="card__t"><b>${esc(c.name)}</b>${c.inn?`<span class="hint mono">ИНН ${esc(c.inn)}</span>`:c.carded?"":`<span class="chip warn">нет реквизитов</span>`}</span>
+      <span class="card__m"><span class="chip">${c.accounts.filter(a=>a.active).length} ${plural(c.accounts.filter(a=>a.active).length,"логин","логина","логинов")}</span>${c.subs.length?`<span class="chip info">${c.subs.length} ${plural(c.subs.length,"подразделение","подразделения","подразделений")}</span>`:""}</span></summary>
+    <div class="card__body">
+      <div class="row"><button class="btn sm" type="button" data-cedit>Реквизиты</button><button class="btn sm ghost" type="button" data-cview>Открыть кабинет клиента</button></div>
+      ${c.address||c.kpp||c.ogrn?`<p class="hint">${[c.kpp&&"КПП "+c.kpp,c.ogrn&&"ОГРН "+c.ogrn,c.address].filter(Boolean).map(esc).join(" · ")}</p>`:""}
+      <h3>Подразделения</h3>
+      ${c.subs.length?`<div class="list">${c.subs.map(s=>`<div class="list__row" data-sub="${s.id}">
+        <input data-sname value="${esc(s.name)}" aria-label="Название подразделения">
+        <select data-sbank aria-label="Расчётный счёт">${bankOpts(s.bank_id,"Счёт как у клиента")}</select>
+        <span class="row nowrap"><button class="btn sm" type="button" data-ssave>Сохранить</button><button class="btn sm ghost" type="button" data-sdel>Удалить</button></span></div>`).join("")}</div>`
+        :`<p class="hint">Нет подразделений: все логины и документы — на клиента целиком.</p>`}
+      <div class="row"><input data-newsub placeholder="Новое подразделение, например «Москва» или «Wildberries»"><button class="btn sm" type="button" data-addsub>Добавить</button></div>
+      <h3>Логины</h3>
+      ${c.accounts.length?`<div class="list">${c.accounts.map(a=>`<div class="list__row acc${a.active?"":" off"}" data-uid="${a.id}">
+        <span class="acc__who"><b>${esc(a.name)}</b><span class="mono">${esc(a.login)}</span><span class="hint">${a.sub_id?esc(subName(a.sub_id)):"весь клиент"} · ${a.last_seen?"был "+fmtTs(a.last_seen):"ещё не входил"}</span></span>
+        <label class="switch"><input type="checkbox" data-canpw${a.can_change_pw?" checked":""}> может менять пароль</label>
+        <span class="row nowrap"><button class="btn sm" type="button" data-newpw>Новый пароль</button><button class="btn sm ${a.active?"ghost":"primary"}" type="button" data-toggle>${a.active?"Отключить":"Включить"}</button></span></div>`).join("")}</div>`
+        :`<p class="hint">Логинов пока нет.</p>`}
+      <div class="row add-login"><input data-lname placeholder="Кто будет входить (имя)"><select data-lsub>${subOpts(null)}</select><button class="btn sm primary" type="button" data-addlogin>Выдать логин и пароль</button></div>
+      ${cred}
+    </div></details>`}).join("");
+}
+$("acQ").addEventListener("input",renderAcClients);
+$("acClients").addEventListener("toggle",e=>{const d=e.target.closest("details[data-ck]");if(d)d.open?AC.open.add(d.dataset.ck):AC.open.delete(d.dataset.ck)},true);
+function openClientForm(c){
+  const f=$("acClientForm");f.hidden=false;AC.editCk=c?c.ckey:null;
+  $("acInn").value=c?c.inn:"";$("acName").value=c?c.name:"";$("acKpp").value=c?c.kpp:"";$("acOgrn").value=c?c.ogrn:"";$("acAddress").value=c?c.address:"";
+  $("acName").readOnly=!!c;$("acBank").innerHTML=bankOpts(c?c.bank_id:null,"Основной счёт склада");
+  f.scrollIntoView({block:"nearest"});(c?$("acInn"):$("acInn")).focus();
+}
+$("acNewClient").addEventListener("click",()=>openClientForm(null));
+$("acClientCancel").addEventListener("click",()=>{$("acClientForm").hidden=true;AC.editCk=null});
+$("acInnFind").addEventListener("click",async e=>{
+  const r=await run(e.currentTarget,"Ищу…",()=>api("GET","/api/lookup/party?inn="+encodeURIComponent($("acInn").value.trim())));if(!r)return;
+  if(!AC.editCk&&(!$("acName").value.trim()||$("acName").dataset.auto))$("acName").value=r.name,$("acName").dataset.auto="1";
+  $("acKpp").value=r.kpp;$("acOgrn").value=r.ogrn;$("acAddress").value=r.address;okb(`Найдено: ${r.name}`);
 });
-$("uTable").addEventListener("click",e=>{
-  const tr=e.target.closest("tr[data-id]");if(!tr)return;const id=+tr.dataset.id;const u=users.find(x=>x.id===id);
-  if(e.target.closest("[data-saveclient]")){const v=$("uc_"+id).value.trim();if(!v){fail("Укажите компанию клиента");return}
-    updUser({id,role:"client",client:v},u.role==="client"?`Компания для ${u.name}: ${v}`:`${u.name} теперь клиент «${v}»`);return}
-  if(e.target.closest("[data-pass]")){const p=$("up_"+id).value;if(p.length<6){fail("Пароль должен быть не короче 6 символов");return}updUser({id,password:p},`Пароль для ${u.name} изменён`)}
-  if(e.target.closest("[data-active]"))updUser({id,active:!u.active},u.active?`${u.name} отключён`:`${u.name} снова может входить`);
-});
-$("uRole").addEventListener("change",()=>{const c=$("uRole").value==="client";$("uClientWrap").hidden=!c;$("uClient").required=c;if(c)$("uClient").focus()});
-$("uForm").addEventListener("submit",async e=>{
+$("acName").addEventListener("input",()=>delete $("acName").dataset.auto);
+$("acClientForm").addEventListener("submit",async e=>{
   e.preventDefault();
-  const body={name:$("uName").value.trim(),login:$("uLogin").value.trim(),password:$("uPass").value,role:$("uRole").value,client:$("uClient").value.trim()};
-  if(body.role==="client"&&!clients().some(c=>norm(c)===norm(body.client))&&!$("uForm").dataset.confirm){
-    const sim=similarClient(body.client);
-    $("uForm").dataset.confirm="1";fail(sim?`Клиента «${body.client}» на складе нет, но есть похожий: «${sim}». Выберите его из списка или нажмите «Добавить» ещё раз.`:`Товаров клиента «${body.client}» на складе пока нет. Проверьте написание или нажмите «Добавить» ещё раз.`);return}
-  delete $("uForm").dataset.confirm;
-  const res=await run(e.submitter,"Добавляю…",()=>api("POST","/api/users",body));
-  if(res){okb(`${body.role==="client"?"Доступ клиенту":"Сотрудник"} добавлен. Логин: ${body.login.toLowerCase()}`);["uName","uLogin","uPass","uClient"].forEach(id=>$(id).value="");await loadUsers()}
+  const body={name:$("acName").value.trim(),inn:$("acInn").value.trim(),kpp:$("acKpp").value.trim(),ogrn:$("acOgrn").value.trim(),address:$("acAddress").value.trim(),bank_id:$("acBank").value};
+  const res=await run(e.submitter,"Сохраняю…",()=>api("POST","/api/clients",body));
+  if(res){okb(AC.editCk?"Реквизиты клиента сохранены":`Клиент «${body.name}» добавлен`);$("acClientForm").hidden=true;AC.open.add(res.ckey);AC.editCk=null;await loadAccess()}
 });
-$("uClient").addEventListener("input",()=>delete $("uForm").dataset.confirm);
-$("pvOpen").addEventListener("click",()=>{const c=$("pvClient").value;if(c)showPortal(c)});
+$("acClients").addEventListener("click",async e=>{
+  const card=e.target.closest("[data-ck]");if(!card||e.target.closest("summary"))return;
+  const c=AC.clients.find(x=>x.ckey===card.dataset.ck);if(!c)return;const B=e.target.closest("button");
+  if(e.target.closest("[data-cedit]")){openClientForm(c);return}
+  if(e.target.closest("[data-cview]")){showPortal(c.name);return}
+  if(e.target.closest("[data-addsub]")){const i=card.querySelector("[data-newsub]"),name=i.value.trim();if(!name){fail("Введите название подразделения");i.focus();return}
+    const res=await run(B,"…",()=>api("POST","/api/clients/sub",{client:c.name,name}));if(res){okb("Подразделение добавлено");await loadAccess()}return}
+  const sub=e.target.closest("[data-sub]");
+  if(sub&&e.target.closest("[data-ssave]")){const res=await run(B,"…",()=>api("POST","/api/clients/sub",{id:+sub.dataset.sub,name:sub.querySelector("[data-sname]").value,bank_id:sub.querySelector("[data-sbank]").value}));if(res){okb("Подразделение сохранено");await loadAccess()}return}
+  if(sub&&e.target.closest("[data-sdel]")){const b=e.target.closest("[data-sdel]");if(!b.dataset.confirm){b.dataset.confirm="1";b.textContent="Точно удалить?";return}
+    const res=await run(b,"…",()=>api("POST","/api/clients/sub/delete",{id:+sub.dataset.sub}));if(res){okb("Подразделение удалено, его логины видят весь клиент");await loadAccess()}return}
+  if(e.target.closest("[data-addlogin]")){
+    const name=card.querySelector("[data-lname]").value.trim()||c.name,subId=card.querySelector("[data-lsub]").value;
+    const login=suggestLogin(c.name,subId?(c.subs.find(s=>s.id===+subId)||{}).name:""),pass=genPass();
+    const res=await run(B,"Создаю…",()=>api("POST","/api/users",{name,login,password:pass,role:"client",client:c.name,sub_id:subId||null}));
+    if(res){AC.cred={ck:c.ckey,login,pass};AC.open.add(c.ckey);okb("Логин выдан");await loadAccess()}return}
+  const acc=e.target.closest("[data-uid]");if(!acc)return;const id=+acc.dataset.uid,a=c.accounts.find(x=>x.id===id);
+  if(e.target.closest("[data-newpw]")){const pass=genPass();const res=await run(B,"…",()=>api("POST","/api/users/update",{id,password:pass}));
+    if(res){AC.cred={ck:c.ckey,login:a.login,pass};okb("Пароль сменён, старый больше не действует");await loadAccess()}return}
+  if(e.target.closest("[data-toggle]")){const res=await run(B,"…",()=>api("POST","/api/users/update",{id,active:!a.active}));if(res){okb(a.active?`${a.login} отключён`:`${a.login} снова может входить`);await loadAccess()}}
+});
+$("acClients").addEventListener("change",async e=>{
+  const i=e.target.closest("[data-canpw]");if(!i)return;const id=+i.closest("[data-uid]").dataset.uid;
+  const res=await run(null,"",()=>api("POST","/api/users/update",{id,can_change_pw:i.checked}));
+  if(res)okb(i.checked?"Клиент сможет сам сменить пароль":"Пароль меняет только склад");else i.checked=!i.checked;
+});
+
+/* --- сотрудники --- */
+const sfPermsVal=box=>[...box.querySelectorAll('input[type="checkbox"][value]')].filter(i=>i.checked).map(i=>i.value);
+function syncPermBox(box,role){box.hidden=role==="admin";const t=box.querySelector('[value="team"]'),m=box.querySelector('[data-show="team"]');if(m)m.hidden=!(t&&t.checked)}
+$("sfRole").addEventListener("change",()=>syncPermBox($("sfPerms"),$("sfRole").value));
+$("sfPerms").addEventListener("change",()=>syncPermBox($("sfPerms"),$("sfRole").value));
+$("sfName").addEventListener("input",()=>{if(!$("sfLogin").dataset.touched)$("sfLogin").value=suggestLogin($("sfName").value)});
+$("sfLogin").addEventListener("input",()=>$("sfLogin").dataset.touched="1");
+$("sfForm").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const body={name:$("sfName").value.trim(),login:$("sfLogin").value.trim(),password:$("sfPass").value,role:$("sfRole").value,dept:$("sfDept").value.trim(),rate:$("sfRate").value,
+    perms:sfPermsVal($("sfPerms")),manage_depts:$("sfManage").value};
+  const res=await run(e.submitter,"Добавляю…",()=>api("POST","/api/users",body));
+  if(!res)return;
+  $("sfCred").innerHTML=credHtml({login:body.login.toLowerCase(),pass:body.password});okb(`Сотрудник ${body.name} добавлен`);
+  ["sfName","sfLogin","sfDept","sfRate","sfManage"].forEach(id=>$(id).value="");delete $("sfLogin").dataset.touched;$("sfPass").value=genPass();
+  await loadAccess();
+});
+function renderAcStaff(){
+  if(!$("sfPass").value)$("sfPass").value=genPass();
+  const box=$("acStaff"),list=AC.users.filter(u=>u.role!=="client");
+  if(!list.length){box.innerHTML=`<p class="hint">Загружаю…</p>`;return}
+  box.innerHTML=list.map(u=>{
+    const perms=u.role==="admin"?["всё"]:String(u.perms||"").split(",").filter(Boolean).map(p=>PERM_NAMES[p]||p);
+    const cred=AC.cred&&AC.cred.uid===u.id?credHtml(AC.cred):"";
+    return`<details class="card${u.active?"":" off"}" data-uid="${u.id}"${AC.open.has("u"+u.id)?" open":""}>
+    <summary><span class="card__t"><b>${esc(u.name)}</b><span class="mono hint">${esc(u.login)}</span>${u.id===me.id?'<span class="chip info">это вы</span>':""}${u.active?"":'<span class="chip">отключён</span>'}</span>
+      <span class="card__m"><span class="chip ${u.role==="admin"?"warn":""}">${u.role==="admin"?"Администратор":esc(u.dept||"Сотрудник")}</span>${u.rate?`<span class="chip">${fmtRub(u.rate)}/смена</span>`:""}<span class="hint">${perms.map(esc).join(", ")||"нет прав"}</span></span></summary>
+    <div class="card__body">
+      <div class="row">
+        <label class="f">Имя<input data-f="name" value="${esc(u.name)}"></label>
+        <label class="f">Роль<select data-f="role"${u.id===me.id?" disabled":""}><option value="worker"${u.role==="worker"?" selected":""}>Сотрудник</option><option value="admin"${u.role==="admin"?" selected":""}>Администратор (всё)</option></select></label>
+      </div>
+      <div class="row">
+        <label class="f">Подразделение<input data-f="dept" list="deptList" value="${esc(u.dept)}"></label>
+        <label class="f narrow" style="flex-basis:140px">Оклад за смену, ₽<input data-f="rate" type="number" min="0" step="any" inputmode="decimal" value="${u.rate||""}"></label>
+      </div>
+      <fieldset class="perms" data-perms${u.role==="admin"?" hidden":""}><legend>Что доступно</legend>
+        ${Object.entries(PERM_NAMES).map(([p,t])=>`<label class="switch"><input type="checkbox" value="${p}"${String(u.perms||"").split(",").includes(p)?" checked":""}> ${t}</label>`).join("")}
+        <label class="f" data-show="team"${String(u.perms||"").split(",").includes("team")?"":" hidden"}>Руководит подразделениями (через запятую; пусто — своим)<input data-f="manage_depts" list="deptList" value="${esc(u.manage_depts)}"></label>
+      </fieldset>
+      <p class="hint">${u.last_seen?"Был в сети "+fmtTs(u.last_seen):"Ещё не входил"}</p>
+      <div class="row"><button class="btn sm primary" type="button" data-usave>Сохранить</button><button class="btn sm" type="button" data-newpw>Новый пароль</button>
+        ${u.id===me.id?"":`<button class="btn sm ${u.active?"ghost":"primary"}" type="button" data-toggle>${u.active?"Отключить":"Включить"}</button>`}</div>
+      ${cred}
+    </div></details>`}).join("");
+}
+$("acStaff").addEventListener("toggle",e=>{const d=e.target.closest("details[data-uid]");if(d)d.open?AC.open.add("u"+d.dataset.uid):AC.open.delete("u"+d.dataset.uid)},true);
+$("acStaff").addEventListener("change",e=>{const card=e.target.closest("[data-uid]");if(!card)return;const box=card.querySelector("[data-perms]");syncPermBox(box,card.querySelector('[data-f="role"]').value)});
+$("acStaff").addEventListener("click",async e=>{
+  const card=e.target.closest("[data-uid]");if(!card||e.target.closest("summary"))return;const id=+card.dataset.uid,u=AC.users.find(x=>x.id===id);if(!u)return;
+  const f=n=>card.querySelector(`[data-f="${n}"]`);
+  if(e.target.closest("[data-usave]")){
+    const body={id,name:f("name").value,dept:f("dept").value,rate:f("rate").value,perms:sfPermsVal(card.querySelector("[data-perms]")),manage_depts:f("manage_depts").value};
+    if(u.id!==me.id)body.role=f("role").value;
+    const res=await run(B,"…",()=>api("POST","/api/users/update",body));if(res){okb("Сохранено");await loadAccess()}return}
+  if(e.target.closest("[data-newpw]")){const pass=genPass();const res=await run(B,"…",()=>api("POST","/api/users/update",{id,password:pass}));
+    if(res){AC.cred={uid:id,login:u.login,pass};okb("Пароль сменён");await loadAccess()}return}
+  if(e.target.closest("[data-toggle]")){const res=await run(B,"…",()=>api("POST","/api/users/update",{id,active:!u.active}));if(res){okb(u.active?`${u.name} отключён`:`${u.name} снова может входить`);await loadAccess()}}
+});
 $("backupBtn").addEventListener("click",()=>{const a=document.createElement("a");a.href="/api/backup";a.download="";document.body.appendChild(a);a.click();a.remove()});
+
+/* ======================================================
+   ГРАФИК И ЗАРПЛАТА (руководитель, администратор)
+   ====================================================== */
+const curMonth=()=>localDay().slice(0,7);
+const WD=["вс","пн","вт","ср","чт","пт","сб"];
+const wdOf=day=>new Date(day+"T00:00:00Z").getUTCDay();
+const SH_NEXT={"":"plan",plan:"done",done:"absent",absent:""};
+const SH_SYM={plan:"П",done:"✓",absent:"✗"};
+const SH_NAME={plan:"по графику",done:"отработал",absent:"не вышел"};
+const TM={data:null};
+const monthDays=d=>Array.from({length:d.days},(_,i)=>`${d.month}-${String(i+1).padStart(2,"0")}`);
+let tmLoading=null,tmAgain=false;
+async function loadTeam(){
+  if(tmLoading){tmAgain=true;return tmLoading}
+  if(!$("tmMonth").value)$("tmMonth").value=curMonth();
+  tmLoading=(async()=>{try{TM.data=await api("GET","/api/team?month="+$("tmMonth").value);if(tab==="team")renderTeam()}catch(e){fail(e.message)}
+    finally{tmLoading=null;if(tmAgain){tmAgain=false;loadTeam()}}})();
+  return tmLoading;
+}
+function tmUsers(){const d=TM.data,dep=$("tmDept").value;return d?d.users.filter(u=>!dep||norm(u.dept)===norm(dep)):[]}
+function userOpts(sel,list){const prev=sel.value;sel.innerHTML=list.map(u=>`<option value="${u.id}"${String(u.id)===prev?" selected":""}>${esc(u.name)}${u.dept?" · "+esc(u.dept):""}</option>`).join("")}
+function renderTeam(){
+  const d=TM.data;if(!d){$("tmGrid").innerHTML=`<p class="hint">Загружаю…</p>`;return}
+  const dsel=$("tmDept"),prev=dsel.value,depts=[...new Set(d.users.map(u=>u.dept).filter(Boolean))].sort();
+  dsel.innerHTML=`<option value="">Все</option>`+depts.map(x=>`<option${x===prev?" selected":""}>${esc(x)}</option>`).join("");
+  const users=tmUsers(),days=monthDays(d);
+  userOpts($("fnUser"),users);userOpts($("ptnUser"),users);
+  if(!$("fnDay").value||!$("fnDay").value.startsWith(d.month))$("fnDay").value=d.today.startsWith(d.month)?d.today:d.from;
+  if(!$("ptnStart").value||!$("ptnStart").value.startsWith(d.month))$("ptnStart").value=d.from;
+  if(!users.length){$("tmGrid").innerHTML=`<div class="empty"><b>Сотрудников нет</b>${me.role==="admin"?"Добавьте сотрудников во вкладке «Доступы» и укажите подразделение.":"В ваших подразделениях пока нет сотрудников."}</div>`;$("tmSalary").innerHTML="";$("fnList").innerHTML="";return}
+  const sh=new Map(d.shifts.map(s=>[s.user_id+"|"+s.day,s.status]));
+  $("tmGrid").innerHTML=`<div class="table-wrap grid-wrap"><table class="sgrid"><thead><tr><th class="sg-name">Сотрудник</th>${days.map(x=>{const w=wdOf(x);return`<th class="${w===0||w===6?"we":""}${x===d.today?" today":""}"><span>${+x.slice(8)}</span><small>${WD[w]}</small></th>`}).join("")}<th class="num">✓</th></tr></thead><tbody>${users.map(u=>{
+    const act=d.activity[u.id]||{};let done=0;
+    return`<tr><th class="sg-name"><b>${esc(u.name)}</b><small>${esc(u.dept||"")}</small></th>${days.map(x=>{const s=sh.get(u.id+"|"+x)||"";if(s==="done")done++;const w=wdOf(x);
+      return`<td class="${w===0||w===6?"we":""}${x===d.today?" today":""}"><button type="button" class="sh ${s}" data-su="${u.id}" data-sd="${x}" title="${esc(u.name)}, ${fmtDay(x)}: ${s?SH_NAME[s]:"нет отметки"}${act[x]?`, операций: ${act[x]}`:""}">${SH_SYM[s]||""}${act[x]?'<i class="dot-act"></i>':""}</button></td>`}).join("")}<td class="num mono"><b>${done}</b></td></tr>`}).join("")}</tbody></table></div>`;
+  const ids=new Set(users.map(u=>u.id)),sal=d.salary.filter(s=>ids.has(s.user_id)),byId=new Map(d.users.map(u=>[u.id,u]));
+  const sum=k=>sal.reduce((a,s)=>a+s[k],0);
+  $("tmSalary").innerHTML=`<div class="table-wrap"><table><thead><tr><th>Сотрудник</th><th class="num">Смен</th><th class="num">Оклад</th><th class="num">Начислено</th><th class="num">Премии</th><th class="num">Штрафы</th><th class="num">К выплате</th></tr></thead><tbody>${sal.map(s=>{const u=byId.get(s.user_id);return`<tr>
+    <td><b>${esc(u.name)}</b>${u.dept?`<br><span class="hint">${esc(u.dept)}</span>`:""}</td><td class="num mono">${s.done}</td><td class="num mono">${u.rate?fmtRub(u.rate):"—"}</td><td class="num mono">${fmtRub(s.base)}</td>
+    <td class="num mono">${s.bonuses?"+"+fmtRub(s.bonuses):"—"}</td><td class="num mono">${s.fines?"−"+fmtRub(s.fines):"—"}</td><td class="num mono"><b>${fmtRub(s.total)}</b></td></tr>`}).join("")}
+    <tr><td><b>Итого</b></td><td class="num mono">${sum("done")}</td><td></td><td class="num mono">${fmtRub(sum("base"))}</td><td class="num mono">${fmtRub(sum("bonuses"))}</td><td class="num mono">${fmtRub(sum("fines"))}</td><td class="num mono"><b>${fmtRub(sum("total"))}</b></td></tr></tbody></table></div>
+    <p class="hint">Оклад фиксируется в момент отметки смены «✓». Если поменять оклад, уже отмеченные смены не пересчитаются.</p>`;
+  const fines=d.fines.filter(f=>ids.has(f.user_id));
+  $("fnList").innerHTML=fines.length?`<div class="table-wrap"><table><thead><tr><th>Дата</th><th>Сотрудник</th><th>Вид</th><th class="num">Сумма</th><th>Причина</th><th></th></tr></thead><tbody>${fines.map(f=>`<tr>
+    <td class="mono">${fmtDay(f.day)}</td><td>${esc((byId.get(f.user_id)||{}).name)}</td><td><span class="chip ${f.kind==="bonus"?"ok":"bad"}">${f.kind==="bonus"?"Премия":"Штраф"}</span></td>
+    <td class="num mono">${fmtRub(f.amount)}</td><td class="wrap-any">${esc(f.reason)}${f.created_by_name?`<br><span class="hint">${esc(f.created_by_name)}</span>`:""}</td>
+    <td class="num"><button class="btn sm ghost" type="button" data-fdel="${f.id}">Удалить</button></td></tr>`).join("")}</tbody></table></div>`:`<p class="hint">В этом месяце штрафов и премий нет.</p>`;
+}
+$("tmMonth").addEventListener("change",()=>{TM.data=null;renderTeam();loadTeam()});
+$("tmDept").addEventListener("change",renderTeam);
+$("tmGrid").addEventListener("click",async e=>{
+  const b=e.target.closest("[data-su]");if(!b||!TM.data)return;
+  const uid=+b.dataset.su,day=b.dataset.sd,cur=(TM.data.shifts.find(s=>s.user_id===uid&&s.day===day)||{}).status||"",next=SH_NEXT[cur];
+  // сразу показываем новую отметку, сервер подтвердит
+  TM.data.shifts=TM.data.shifts.filter(s=>!(s.user_id===uid&&s.day===day));if(next)TM.data.shifts.push({user_id:uid,day,status:next});renderTeam();
+  try{await api("POST","/api/team/shift",{user_id:uid,day,status:next})}catch(err){fail(err.message)}
+  loadTeam();
+});
+$("tmAuto").addEventListener("click",async e=>{const res=await run(e.currentTarget,"Отмечаю…",()=>api("POST","/api/team/autofill",{month:$("tmMonth").value}));
+  if(res){okb(res.marked?`Отмечено смен: ${res.marked}`:"Новых смен по операциям не найдено");loadTeam()}});
+$("ptnKind").addEventListener("change",()=>$("ptnStartWrap").hidden=$("ptnKind").value!=="2/2");
+$("ptnApply").addEventListener("click",async e=>{if(!$("ptnUser").value){fail("Выберите сотрудника");return}
+  const res=await run(e.currentTarget,"…",()=>api("POST","/api/team/pattern",{user_id:+$("ptnUser").value,month:$("tmMonth").value,pattern:$("ptnKind").value,start:$("ptnStart").value}));
+  if(res){okb($("ptnKind").value==="clear"?"План очищен":`Запланировано смен: ${res.planned}`);loadTeam()}});
+$("fnForm").addEventListener("submit",async e=>{e.preventDefault();
+  const body={user_id:+$("fnUser").value,day:$("fnDay").value,kind:$("fnKind").value,amount:$("fnAmount").value,reason:$("fnReason").value.trim()};
+  const res=await run(e.submitter,"Добавляю…",()=>api("POST","/api/team/fine",body));
+  if(res){okb(body.kind==="bonus"?"Премия добавлена":"Штраф добавлен");$("fnAmount").value="";$("fnReason").value="";loadTeam()}});
+$("fnList").addEventListener("click",async e=>{const b=e.target.closest("[data-fdel]");if(!b)return;
+  if(!b.dataset.confirm){b.dataset.confirm="1";b.textContent="Точно удалить?";return}
+  const res=await run(b,"…",()=>api("POST","/api/team/fine/delete",{id:+b.dataset.fdel}));if(res){okb("Запись удалена");loadTeam()}});
+$("tmExport").addEventListener("click",()=>{
+  const d=TM.data;if(!d)return;const users=tmUsers(),days=monthDays(d),sh=new Map(d.shifts.map(s=>[s.user_id+"|"+s.day,s.status])),sal=new Map(d.salary.map(s=>[s.user_id,s]));
+  saveXlsx(`grafik-${d.month}.xlsx`,[["Сотрудник","Подразделение",...days.map(x=>+x.slice(8)),"Смен","Оклад","Начислено","Премии","Штрафы","К выплате"],
+    ...users.map(u=>{const s=sal.get(u.id)||{};return[u.name,u.dept,...days.map(x=>SH_SYM[sh.get(u.id+"|"+x)]||""),s.done,u.rate,s.base,s.bonuses,s.fines,s.total]})],"График "+d.month);
+});
+
+/* ======================================================
+   МОЙ КАБИНЕТ (каждый сотрудник)
+   ====================================================== */
+const ME={data:null};
+async function loadCabinet(){
+  if(!$("meMonth").value)$("meMonth").value=curMonth();
+  try{ME.data=await api("GET","/api/cabinet?month="+$("meMonth").value);if(tab==="me")renderCabinet()}catch(e){fail(e.message)}
+}
+function calendarHtml(d,statusOf,extra){
+  const days=monthDays(d),lead=(wdOf(d.from)+6)%7;
+  return`<div class="cal">${["пн","вт","ср","чт","пт","сб","вс"].map(w=>`<b>${w}</b>`).join("")}${"<span></span>".repeat(lead)}${days.map(x=>{const s=statusOf(x);
+    return`<div class="cal__d ${s}${x===d.today?" today":""}"><span>${+x.slice(8)}</span><em>${SH_SYM[s]||""}</em>${extra?extra(x):""}</div>`}).join("")}</div>`;
+}
+function renderCabinet(){
+  const d=ME.data;if(!d){$("meKv").innerHTML="";$("meCal").innerHTML=`<p class="hint">Загружаю…</p>`;return}
+  const s=d.salary,sh=new Map(d.shifts.map(x=>[x.day,x.status])),planned=d.shifts.filter(x=>x.status==="plan"&&x.day>=d.today).length;
+  $("meKv").innerHTML=`<div><span>Отработано смен</span><b>${s.done}</b></div><div><span>Ещё по графику</span><b>${planned}</b></div>
+    <div><span>Оклад за смену</span><b>${d.rate?fmtRub(d.rate):"не задан"}</b></div><div><span>Начислено</span><b>${fmtRub(s.base)}</b></div>
+    <div><span>Премии</span><b>${s.bonuses?"+"+fmtRub(s.bonuses):"0"}</b></div><div><span>Штрафы</span><b>${s.fines?"−"+fmtRub(s.fines):"0"}</b></div><div><span>К выплате</span><b>${fmtRub(s.total)}</b></div>`;
+  const opsBy={};d.ops.forEach(o=>opsBy[o.day]=(opsBy[o.day]||0)+1);
+  $("meCal").innerHTML=calendarHtml(d,x=>sh.get(x)||"",x=>opsBy[x]?`<small>${opsBy[x]} оп.</small>`:"");
+  $("meFines").innerHTML=d.fines.length?`<div class="list">${d.fines.map(f=>`<div class="list__row"><span class="chip ${f.kind==="bonus"?"ok":"bad"}">${f.kind==="bonus"?"Премия":"Штраф"}</span>
+    <span class="mono">${fmtDay(f.day)}</span><b class="mono">${f.kind==="bonus"?"+":"−"}${fmtRub(f.amount)}</b><span class="wrap-any">${esc(f.reason)}</span></div>`).join("")}</div>`:`<p class="hint">Штрафов и премий в этом месяце нет.</p>`;
+  const cnt={};d.ops.forEach(o=>{cnt[o.type]=(cnt[o.type]||0)+1});const units=t=>d.ops.filter(o=>o.type===t).reduce((a,o)=>a+Math.abs(o.qty),0);
+  $("meOpsKv").innerHTML=`<div><span>Всего операций</span><b>${d.ops.length}</b></div>${["receive","putaway","move","pick","inventory"].filter(t=>cnt[t]).map(t=>`<div><span>${OPN[t]}</span><b>${cnt[t]} · ${units(t)} шт.</b></div>`).join("")}`;
+  const rows=d.ops.slice(0,300);
+  $("meOps").innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>Когда</th><th>Операция</th><th>Клиент</th><th>Артикул</th><th>Ячейка</th><th class="num">Кол-во</th></tr></thead><tbody>${rows.map(o=>`<tr>
+    <td class="mono" style="white-space:nowrap">${fmtTs(o.ts)}</td><td><span class="chip ${OPC[o.type]||""}">${OPN[o.type]||esc(o.type)}</span></td><td>${esc(o.client)}</td>
+    <td class="wrap-any"><span class="mono">${esc(o.article)}</span>${o.name?`<br><span class="hint">${esc(o.name)}</span>`:""}</td>
+    <td style="white-space:nowrap">${o.from_cell?addrHtml(o.from_cell)+" → ":""}${o.cell?addrHtml(o.cell):""}</td><td class="num mono">${o.qty}</td></tr>`).join("")}</tbody></table></div>${d.ops.length>rows.length?`<p class="hint">Показаны последние ${rows.length} из ${d.ops.length}.</p>`:""}`
+    :`<p class="hint">В этом месяце операций нет.</p>`;
+}
+$("meMonth").addEventListener("change",()=>{ME.data=null;renderCabinet();loadCabinet()});
+
 
 /* ======================================================
    КАБИНЕТ КЛИЕНТА
@@ -1066,7 +1380,7 @@ function showPortal(previewClient){
   $("app").hidden=true;$("login").hidden=true;$("portal").hidden=false;
   $("ptWho").textContent=me.name;
   $("ptPreview").hidden=!P.preview;$("ptPreviewText").textContent=P.preview?`Так кабинет видит клиент «${P.client}»`:"";
-  $("ptLogout").hidden=P.preview;$("ptPassTab").hidden=P.preview;
+  $("ptLogout").hidden=P.preview;$("ptPassTab").hidden=P.preview||!me.can_change_pw;
   $("ptClient").textContent=P.client;$("ptUpdated").textContent="";$("ptStatus").textContent="Загрузка…";
   ["ptStockTable","ptRcList","ptOpsTable","ptKv","ptBillList","ptChTable"].forEach(id=>$(id).innerHTML="");
   setPtTab(P.preview&&ls.get("ptTab")==="pass"?"stock":(ls.get("ptTab")||"stock"));
@@ -1074,14 +1388,14 @@ function showPortal(previewClient){
   loadPortal();
 }
 function setPtTab(name){
-  if(!PT_TABS.includes(name)||(name==="pass"&&P.preview))name="stock";P.tab=name;ls.set("ptTab",name);
+  if(!PT_TABS.includes(name)||(name==="pass"&&(P.preview||!me.can_change_pw)))name="stock";P.tab=name;ls.set("ptTab",name);
   [...$("ptTabs").children].forEach(b=>b.setAttribute("aria-selected",String(b.dataset.pt===name)));
   PT_TABS.forEach(n=>$("pt-"+n).hidden=n!==name);
   renderPortal();
   const b=$("ptTabs").querySelector(`[data-pt="${name}"]`);b&&b.scrollIntoView({inline:"nearest",block:"nearest"});
 }
 $("ptTabs").addEventListener("click",e=>{const b=e.target.closest("[data-pt]");if(b)setPtTab(b.dataset.pt)});
-$("ptBack").addEventListener("click",()=>{mode="app";P.data=null;$("portal").hidden=true;$("app").hidden=false;setTab("users");load(ALL_PARTS)});
+$("ptBack").addEventListener("click",()=>{mode="app";P.data=null;$("portal").hidden=true;$("app").hidden=false;setTab("access");load(ALL_PARTS)});
 $("ptLogout").addEventListener("click",async()=>{try{await api("POST","/api/logout",{})}catch(e){}showLogin(false)});
 /* сводка по артикулу: на складе (в ячейках) и в приёмке (ещё не разложено) */
 function ptItems(){
@@ -1167,7 +1481,7 @@ $("ptPassForm").addEventListener("submit",async e=>{
 /* ======================================================
    УСЛУГИ И СЧЕТА
    ====================================================== */
-const BL={services:[],charges:[],invoices:[],summary:null,settings:null,draft:null};
+const BL={services:[],charges:[],invoices:[],summary:null,settings:null,draft:null,bkEdit:null};
 const localDay=(d=new Date())=>d.toLocaleDateString("sv-SE");
 const fmtRub=n=>Number(n||0).toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})+" ₽";
 const fmtQty=n=>Number(n||0).toLocaleString("ru-RU",{maximumFractionDigits:2});
@@ -1180,9 +1494,9 @@ async function loadBilling(){
   blLoading=(async()=>{
     try{
       const c=$("chfClient").value,qs=new URLSearchParams();if(c)qs.set("client",c);if($("chOpen").checked)qs.set("open","1");
-      const[s,ch,inv,sum,set]=await Promise.all([api("GET","/api/billing/services"),api("GET","/api/billing/charges?"+qs),
-        isAdmin()?api("GET","/api/billing/invoices"):null,isAdmin()?api("GET","/api/billing/summary"):null,isAdmin()&&!BL.settings?api("GET","/api/billing/settings"):null]);
-      BL.services=s.services;BL.charges=ch.charges;if(inv)BL.invoices=inv.invoices;if(sum)BL.summary=sum;if(set){BL.settings=set.settings;fillReq()}
+      const[s,ch,inv,sum,set,cl]=await Promise.all([api("GET","/api/billing/services"),api("GET","/api/billing/charges?"+qs),
+        isAdmin()?api("GET","/api/billing/invoices"):null,isAdmin()?api("GET","/api/billing/summary"):null,isAdmin()&&!BL.settings?api("GET","/api/billing/settings"):null,isAdmin()&&tab==="bill"?api("GET","/api/clients"):null]);
+      BL.services=s.services;BL.charges=ch.charges;if(inv)BL.invoices=inv.invoices;if(sum)BL.summary=sum;if(set){BL.settings=set.settings;fillReq()}if(cl){AC.clients=cl.clients;AC.banks=cl.banks}
       if(tab==="svc")renderSvc();if(tab==="bill")renderBill();
     }catch(e){fail(e.message)}
     finally{blLoading=null;if(blAgain){blAgain=false;loadBilling()}}
@@ -1231,13 +1545,13 @@ function linesTable(lines,total){
 function renderBill(){
   const s=BL.summary;
   $("billKv").innerHTML=s?`<div><span>Услуг за этот месяц</span><b>${fmtRub(s.month)}</b></div><div><span>Ждёт оплаты</span><b>${fmtRub(s.unpaid)}</b></div><div><span>Ещё не выставлено</span><b>${fmtRub(s.open)}</b></div>`:"";
-  clientOptions($("biClient"));clientOptions($("cpClient"));
+  clientOptions($("biClient"));clientOptions($("cpClient"));renderBiSub();renderBanks();
   if(!$("biFrom").value){const d=new Date();$("biFrom").value=localDay(new Date(d.getFullYear(),d.getMonth(),1));$("biTo").value=localDay(d)}
   const box=$("biTable"),list=BL.invoices;
   box.innerHTML=list.length?`<div class="table-wrap"><table><thead><tr><th>№</th><th>Клиент</th><th>Период</th><th class="num">Сумма</th><th>Статус</th><th></th></tr></thead><tbody>${list.map(i=>`<tr data-inv="${i.id}"${i.status==="cancelled"?' style="opacity:.55"':""}>
-    <td class="mono">${esc(i.number)}</td><td>${esc(i.client)}</td><td class="mono" style="white-space:nowrap">${fmtDay(i.period_from)} — ${fmtDay(i.period_to)}</td>
+    <td class="mono">${esc(i.number)}</td><td>${esc(i.client)}${i.sub_name?`<br><span class="hint">${esc(i.sub_name)}</span>`:""}</td><td class="mono" style="white-space:nowrap">${fmtDay(i.period_from)} — ${fmtDay(i.period_to)}</td>
     <td class="num mono"><b>${fmtRub(i.total)}</b></td><td>${invChip(i.status)}</td>
-    <td class="num"><span class="row" style="flex-wrap:nowrap;justify-content:flex-end"><button class="btn sm" type="button" data-print>Печать</button>${i.status==="issued"?`<button class="btn sm" type="button" data-st="paid">Оплачен</button><button class="btn sm ghost" type="button" data-st="cancel">Отменить</button>`:i.status==="paid"?`<button class="btn sm ghost" type="button" data-st="issued">Не оплачен</button>`:""}</span></td></tr>`).join("")}</tbody></table></div>`
+    <td class="num"><span class="row" style="flex-wrap:nowrap;justify-content:flex-end"><button class="btn sm" type="button" data-print="invoice">Счёт PDF</button><button class="btn sm" type="button" data-print="act">Акт PDF</button>${i.status==="issued"?`<button class="btn sm" type="button" data-st="paid">Оплачен</button><button class="btn sm ghost" type="button" data-st="cancel">Отменить</button>`:i.status==="paid"?`<button class="btn sm ghost" type="button" data-st="issued">Не оплачен</button>`:""}</span></td></tr>`).join("")}</tbody></table></div>`
     :`<div class="empty"><b>Счетов пока нет</b>Выберите клиента и период выше и нажмите «Посчитать».</div>`;
   const tf=$("tfTable"),KIND={receive:"сама при приёмке",pick:"сама при сборке",storage:"по дням в счёте",manual:"вручную"};
   tf.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Услуга</th><th>Ед.</th><th class="num">Цена, ₽</th><th>Начисляется</th><th>Активна</th><th></th></tr></thead><tbody>${BL.services.map(s=>`<tr data-svc="${s.id}">
@@ -1267,13 +1581,18 @@ $("tfTable").addEventListener("click",async e=>{const b=e.target.closest("[data-
 $("tfForm").addEventListener("submit",async e=>{e.preventDefault();
   const res=await run(e.submitter,"Добавляю…",()=>api("POST","/api/billing/services",{name:$("tfName").value,unit:$("tfUnit").value,price:$("tfPrice").value}));
   if(res){okb("Услуга добавлена в тарифы");$("tfName").value="";$("tfPrice").value="";loadBilling()}});
-function fillReq(){document.querySelectorAll("[data-req]").forEach(i=>i.value=(BL.settings||{})[i.dataset.req]||"")}
+function fillReq(){document.querySelectorAll("[data-req]").forEach(i=>i.value=(BL.settings||{})[i.dataset.req]||"");renderSignImgs()}
 $("reqForm").addEventListener("submit",async e=>{e.preventDefault();const body={};document.querySelectorAll("[data-req]").forEach(i=>body[i.dataset.req]=i.value.trim());
-  const res=await run(e.submitter,"Сохраняю…",()=>api("POST","/api/billing/settings",body));if(res){BL.settings=body;okb("Реквизиты сохранены")}});
-const biParams=()=>({client:$("biClient").value,from:$("biFrom").value,to:$("biTo").value});
+  const res=await run(e.submitter,"Сохраняю…",()=>api("POST","/api/billing/settings",body));if(res){BL.settings={...BL.settings,...body};okb("Реквизиты сохранены")}});
+const biParams=()=>({client:$("biClient").value,sub_id:$("biSub").value||null,from:$("biFrom").value,to:$("biTo").value});
+function renderBiSub(){
+  const c=AC.clients.find(x=>x.ckey===norm($("biClient").value)),subs=c?c.subs:[],prev=$("biSub").value;
+  $("biSubWrap").hidden=!subs.length;
+  $("biSub").innerHTML=`<option value="">Весь клиент</option>`+subs.map(s=>`<option value="${s.id}"${String(s.id)===prev?" selected":""}>${esc(s.name)}</option>`).join("");
+}
 $("biPreview").addEventListener("click",async e=>{
   const p=biParams();if(!p.client){fail("Выберите клиента");return}
-  const res=await run(e.currentTarget,"Считаю…",()=>api("GET","/api/billing/preview?"+new URLSearchParams(p)));
+  const res=await run(e.currentTarget,"Считаю…",()=>api("GET","/api/billing/preview?"+new URLSearchParams({client:p.client,from:p.from,to:p.to})));
   if(!res)return;BL.draft={...p,total:res.total};
   $("biDraft").innerHTML=res.lines.length?`${linesTable(res.lines,res.total)}${res.storage?`<p class="hint">Хранение с ${fmtDay(res.storage.from)} по ${fmtDay(res.storage.to)}: ${fmtQty(res.storage.qty)} шт·сут.</p>`:""}
     <button class="btn primary" type="button" id="biCreate" style="align-self:flex-start">Выставить счёт на ${fmtRub(res.total)}</button>`
@@ -1281,10 +1600,10 @@ $("biPreview").addEventListener("click",async e=>{
 });
 $("biDraft").addEventListener("click",async e=>{if(e.target.id!=="biCreate"||!BL.draft)return;
   const res=await run(e.target,"Выставляю…",()=>api("POST","/api/billing/invoices",BL.draft));
-  if(res){okb(`Счёт № ${res.number} на ${fmtRub(res.total)} выставлен`);$("biDraft").innerHTML="";BL.draft=null;await loadBilling();printInvoice(res.id)}});
-["biClient","biFrom","biTo"].forEach(id=>$(id).addEventListener("change",()=>{$("biDraft").innerHTML="";BL.draft=null}));
+  if(res){okb(`Счёт № ${res.number} на ${fmtRub(res.total)} выставлен`);$("biDraft").innerHTML="";BL.draft=null;await loadBilling();printInvoice(res.id,"invoice")}});
+["biClient","biSub","biFrom","biTo"].forEach(id=>$(id).addEventListener("change",()=>{$("biDraft").innerHTML="";BL.draft=null;if(id==="biClient")renderBiSub()}));
 $("biTable").addEventListener("click",async e=>{const tr=e.target.closest("tr[data-inv]");if(!tr)return;const id=+tr.dataset.inv;
-  if(e.target.closest("[data-print]")){printInvoice(id);return}
+  const pb=e.target.closest("[data-print]");if(pb){printInvoice(id,pb.dataset.print,pb);return}
   const b=e.target.closest("[data-st]");if(!b)return;
   if(b.dataset.st==="cancel"&&!b.dataset.confirm){b.dataset.confirm="1";b.textContent="Точно отменить?";return}
   const res=await run(b,"…",()=>api("POST","/api/billing/invoices/status",{id,action:b.dataset.st}));
@@ -1303,23 +1622,135 @@ function rublesInWords(amount){
   const t=`${parts.join(" ")} ${plural(whole,...groups[0][1])} ${String(kop).padStart(2,"0")} ${plural(kop,"копейка","копейки","копеек")}`.replace(/\s+/g," ").trim();
   return t.charAt(0).toUpperCase()+t.slice(1);
 }
-async function printInvoice(id){
-  let j;try{j=await api("GET","/api/billing/invoice?id="+id)}catch(e){fail(e.message);return}
-  const i=j.invoice,s=j.supplier||{},row=(k,v)=>v?`<div><span>${k}:</span> ${esc(v)}</div>`:"";
-  printHtml(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Счёт № ${esc(i.number)}</title><style>
-    body{font:13px/1.45 Arial,sans-serif;color:#000;margin:18mm 14mm}h1{font-size:19px;border-bottom:2px solid #000;padding-bottom:6px;margin:0 0 12px}
-    .p{margin:8px 0}.p span{color:#555}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #000;padding:5px 7px;text-align:left}
-    th{background:#eee}td.n{text-align:right;white-space:nowrap}.st{color:#b00;font-weight:bold}.sign{margin-top:40px}</style></head><body>
-    <h1>Счёт № ${esc(i.number)} от ${fmtDay(i.created&&localDay(new Date(i.created)))}</h1>
-    ${i.status!=="issued"?`<p class="st">${INV_ST[i.status][0]}</p>`:""}
-    <div class="p"><b>Исполнитель:</b> ${esc(s.company_name||"склад «Дело в коробке»")}${row("ИНН",s.company_inn)}${row("Адрес",s.company_address)}${row("Банк",s.bank_name)}${row("БИК",s.bank_bik)}${row("Р/с",s.bank_account)}${row("К/с",s.bank_corr_account)}</div>
-    <div class="p"><b>Заказчик:</b> ${esc(i.client)}</div>
-    <div class="p"><b>Основание:</b> услуги фулфилмента за период ${fmtDay(i.period_from)} — ${fmtDay(i.period_to)}</div>
-    <table><thead><tr><th>№</th><th>Услуга</th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Сумма</th></tr></thead><tbody>
-    ${i.lines.map((l,n)=>`<tr><td>${n+1}</td><td>${esc(l.service)}</td><td class="n">${fmtQty(l.qty)}</td><td>${esc(l.unit)}</td><td class="n">${fmtRub(l.price)}</td><td class="n">${fmtRub(l.amount)}</td></tr>`).join("")}
-    <tr><td colspan="5"><b>Итого</b></td><td class="n"><b>${fmtRub(i.total)}</b></td></tr></tbody></table>
-    <p>Всего наименований ${i.lines.length}, на сумму ${fmtRub(i.total)}. ${esc(s.vat_note||"")}<br><b>${esc(rublesInWords(i.total))}</b></p>
-    <div class="sign">Исполнитель ____________________</div></body></html>`);
+/* --- расчётные счета склада --- */
+function renderBanks(){
+  const box=$("bkList"),list=AC.banks;
+  box.innerHTML=list.length?`<div class="list">${list.map(b=>`<div class="list__row" data-bk="${b.id}">
+    <span class="acc__who"><b>${esc(b.title||b.bank_name)}</b><span class="mono">р/с ${esc(b.account)}</span><span class="hint">${esc(b.bank_name)}${b.bik?" · БИК "+esc(b.bik):""}</span></span>
+    ${b.is_default?'<span class="chip ok">основной</span>':""}
+    <span class="row nowrap">${b.is_default?"":'<button class="btn sm" type="button" data-bkdef>Сделать основным</button>'}<button class="btn sm ghost" type="button" data-bkedit>Изменить</button>${b.is_default?"":'<button class="btn sm ghost" type="button" data-bkdel>Удалить</button>'}</span></div>`).join("")}</div>`
+    :`<p class="hint">Счетов пока нет — добавьте хотя бы один, иначе в счёте не будет реквизитов для оплаты.</p>`;
+}
+function bkFormReset(){BL.bkEdit=null;["bkBik","bkName","bkCorr","bkAccount","bkTitle"].forEach(id=>$(id).value="");$("bkSave").textContent="Добавить счёт";$("bkCancel").hidden=true}
+$("bkCancel").addEventListener("click",bkFormReset);
+$("bkFind").addEventListener("click",async e=>{
+  const r=await run(e.currentTarget,"Ищу…",()=>api("GET","/api/lookup/bank?bik="+encodeURIComponent($("bkBik").value.trim())));
+  if(r){$("bkName").value=r.bank_name;$("bkCorr").value=r.corr_account;okb(r.bank_name);$("bkAccount").focus()}
+});
+$("bkForm").addEventListener("submit",async e=>{e.preventDefault();
+  const body={id:BL.bkEdit,bik:$("bkBik").value.trim(),bank_name:$("bkName").value.trim(),corr_account:$("bkCorr").value.trim(),account:$("bkAccount").value.trim(),title:$("bkTitle").value.trim()};
+  const res=await run(e.submitter,"Сохраняю…",()=>api("POST","/api/banks",body));
+  if(res){okb(body.id?"Счёт изменён":"Счёт добавлен");bkFormReset();await loadAccess();renderBanks()}});
+$("bkList").addEventListener("click",async e=>{
+  const row=e.target.closest("[data-bk]"),B=e.target.closest("button");if(!row||!B)return;const id=+row.dataset.bk,b=AC.banks.find(x=>x.id===id);
+  if(B.matches("[data-bkedit]")){BL.bkEdit=id;$("bkBik").value=b.bik;$("bkName").value=b.bank_name;$("bkCorr").value=b.corr_account;$("bkAccount").value=b.account;$("bkTitle").value=b.title;
+    $("bkSave").textContent="Сохранить счёт";$("bkCancel").hidden=false;$("bkForm").scrollIntoView({block:"nearest"});return}
+  if(B.matches("[data-bkdel]")&&!B.dataset.confirm){B.dataset.confirm="1";B.textContent="Точно удалить?";return}
+  const res=await run(B,"…",()=>api("POST",B.matches("[data-bkdef]")?"/api/banks/default":"/api/banks/delete",{id}));
+  if(res){okb(B.matches("[data-bkdef]")?"Основной счёт изменён":"Счёт удалён");await loadAccess();renderBanks()}
+});
+
+/* --- печать и подпись: убираем белый фон, обрезаем поля --- */
+function cleanImage(file){
+  return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(file),img=new Image();
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Не получилось открыть картинку"))};
+    img.onload=()=>{
+      URL.revokeObjectURL(url);
+      const k=Math.min(1,800/Math.max(img.width,img.height)),w=Math.max(1,Math.round(img.width*k)),h=Math.max(1,Math.round(img.height*k));
+      const c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d");x.drawImage(img,0,0,w,h);
+      const d=x.getImageData(0,0,w,h),p=d.data,mins=new Uint8Array(w*h);
+      for(let i=0,j=0;i<p.length;i+=4,j++)mins[j]=Math.min(p[i],p[i+1],p[i+2]);
+      // уровень бумаги — светлый край распределения; всё, что заметно темнее, считаем чернилами
+      const hist=new Uint32Array(256);mins.forEach(v=>hist[v]++);let acc=0,paper=255;for(let v=255;v>=0;v--){acc+=hist[v];if(acc>=mins.length*.35){paper=v;break}}
+      const hi=Math.max(60,paper-18),lo=Math.max(0,hi-70);
+      let x0=w,y0=h,x1=-1,y1=-1;
+      for(let j=0;j<mins.length;j++){
+        const a=Math.round(Math.max(0,Math.min(1,(hi-mins[j])/(hi-lo)))*255);p[j*4+3]=a;
+        if(a>40){const px=j%w,py=(j/w)|0;if(px<x0)x0=px;if(px>x1)x1=px;if(py<y0)y0=py;if(py>y1)y1=py}
+      }
+      if(x1<0){reject(new Error("На картинке не видно печати или подписи"));return}
+      x.putImageData(d,0,0);
+      const pad=6;x0=Math.max(0,x0-pad);y0=Math.max(0,y0-pad);x1=Math.min(w-1,x1+pad);y1=Math.min(h-1,y1+pad);
+      const o=document.createElement("canvas");o.width=x1-x0+1;o.height=y1-y0+1;o.getContext("2d").drawImage(c,x0,y0,o.width,o.height,0,0,o.width,o.height);
+      resolve(o.toDataURL("image/png"));
+    };
+    img.src=url;
+  });
+}
+function renderSignImgs(){
+  const s=BL.settings||{};
+  $("stampPrev").innerHTML=s.stamp_png?`<img src="${s.stamp_png}" alt="Печать">`:`<span class="hint">не загружена</span>`;
+  $("signPrev").innerHTML=s.sign_png?`<img src="${s.sign_png}" alt="Подпись">`:`<span class="hint">не загружена</span>`;
+}
+async function saveImg(key,val){
+  const res=await run(null,"",()=>api("POST","/api/billing/settings",{[key]:val}));
+  if(res){BL.settings={...BL.settings,[key]:val};renderSignImgs();okb(val?(key==="stamp_png"?"Печать сохранена":"Подпись сохранена"):"Убрано")}
+}
+[["stampFile","stamp_png"],["signFile","sign_png"]].forEach(([id,key])=>$(id).addEventListener("change",async e=>{
+  const f=e.target.files[0];e.target.value="";if(!f)return;
+  try{await saveImg(key,await cleanImage(f))}catch(err){fail(err.message)}
+}));
+document.addEventListener("click",e=>{const b=e.target.closest("[data-clearimg]");if(b)saveImg(b.dataset.clearimg,"")});
+
+/* --- счёт и акт в PDF --- */
+let pdfLib=null;
+function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement("script");s.src=src;s.onload=res;s.onerror=()=>{s.remove();rej(new Error("Не удалось загрузить модуль PDF. Проверьте интернет."))};document.head.appendChild(s)})}
+function loadPdf(){return pdfLib||=(async()=>{const v=appVersion?"?v="+appVersion:"";await loadScript("vendor/pdfmake.min.js"+v);await loadScript("vendor/vfs_fonts.js"+v);return window.pdfMake})().catch(e=>{pdfLib=null;throw e})}
+const money2=n=>Number(n||0).toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2});
+const partyLine=p=>[p.name,p.inn&&"ИНН "+p.inn,p.kpp&&"КПП "+p.kpp,p.address].filter(Boolean).join(", ");
+const PDF_THIN={hLineWidth:()=>.5,vLineWidth:()=>.5,paddingLeft:()=>4,paddingRight:()=>4,paddingTop:()=>2,paddingBottom:()=>2};
+const isIp=name=>/^\s*(ип|индивидуальный предприниматель)\b/i.test(name||"");
+function signLine(label,name,img){
+  return{columns:[{text:label,width:95,margin:[0,16,0,0]},
+    {width:120,stack:[img?{image:img,fit:[110,42],relativePosition:{x:6,y:-8}}:{text:""},{canvas:[{type:"line",x1:0,y1:30,x2:120,y2:30,lineWidth:.5}]}]},
+    {text:name?`/ ${name} /`:"",width:"*",margin:[6,16,0,0]}],margin:[0,0,0,4]};
+}
+function docDefinition(kind,j){
+  const i=j.invoice,d=j.doc||{},s=d.supplier||{},bk=d.bank||{},py=d.payer||{},act=kind==="act";
+  const date=act?i.period_to:localDay(new Date(i.created));
+  const title=act?`Акт № ${i.number} от ${fmtDay(date)}`:`Счёт на оплату № ${i.number} от ${fmtDay(date)}`;
+  const C=[];
+  if(!act)C.push({table:{widths:["*",44,150],body:[
+    [{text:[bk.bank_name||"",{text:"\nБанк получателя",fontSize:7,color:"#444"}],rowSpan:2},"БИК",bk.bik||""],
+    [{},"Сч. №",bk.corr_account||""],
+    [{columns:[{text:"ИНН "+(s.inn||"")},{text:s.kpp?"КПП "+s.kpp:""}]},{text:"Сч. №",rowSpan:2},{text:bk.account||"",rowSpan:2}],
+    [{text:[s.name||"",{text:"\nПолучатель",fontSize:7,color:"#444"}]},{},{}]]},layout:PDF_THIN});
+  C.push({text:title,fontSize:14,bold:true,margin:[0,act?0:14,0,4]},{canvas:[{type:"line",x1:0,y1:0,x2:515,y2:0,lineWidth:1.5}],margin:[0,0,0,8]});
+  if(i.status==="cancelled")C.push({text:"ОТМЕНЁН",color:"#B3261E",bold:true,margin:[0,0,0,6]});
+  C.push({table:{widths:[82,"*"],body:[
+    [act?"Исполнитель:":"Поставщик\n(Исполнитель):",{text:partyLine(s),bold:true}],
+    [act?"Заказчик:":"Покупатель\n(Заказчик):",{text:partyLine(py)+(py.sub?` (подразделение «${py.sub}»)`:""),bold:true}],
+    ["Основание:",`Услуги фулфилмента за период ${fmtDay(i.period_from)} — ${fmtDay(i.period_to)}`]]},layout:"noBorders",margin:[0,0,0,8]});
+  C.push({table:{headerRows:1,widths:[18,"*",48,30,62,72],body:[
+    ["№",act?"Наименование работ, услуг":"Товары (работы, услуги)","Кол-во","Ед.","Цена","Сумма"].map(t=>({text:t,bold:true,alignment:"center",fillColor:"#F2F2F2"})),
+    ...i.lines.map((l,n)=>[{text:String(n+1),alignment:"center"},l.service,{text:fmtQty(l.qty),alignment:"right"},{text:l.unit,alignment:"center"},{text:money2(l.price),alignment:"right"},{text:money2(l.amount),alignment:"right"}])]},layout:PDF_THIN});
+  C.push({table:{widths:["*",90],body:[["Итого:",money2(i.total)],[s.vat_note||"Без НДС",""],[act?"Всего:":"Всего к оплате:",money2(i.total)]].map(r=>[{text:r[0],bold:true,alignment:"right"},{text:r[1],bold:true,alignment:"right"}])},layout:"noBorders",margin:[0,4,0,6]});
+  C.push({text:`Всего ${act?"оказано услуг":"наименований"} ${i.lines.length}, на сумму ${money2(i.total)} руб.`},{text:rublesInWords(i.total),bold:true,margin:[0,0,0,8]});
+  if(act)C.push({text:"Вышеперечисленные услуги выполнены полностью и в срок. Заказчик претензий по объёму, качеству и срокам оказания услуг не имеет.",margin:[0,0,0,10]});
+  C.push({canvas:[{type:"line",x1:0,y1:0,x2:515,y2:0,lineWidth:1.5}],margin:[0,0,0,14]});
+  // печать ложится на подпись руководителя, как на бумаге, и не закрывает сумму
+  const stamp=j.stamp?{image:j.stamp,fit:[112,112],relativePosition:{x:act?80:120,y:act?-72:-(48+(s.accountant?35:0))}}:{text:""};
+  const sigCell=(name,img)=>({stack:[img?{image:img,fit:[110,42],relativePosition:{x:10,y:-4}}:{text:""},{canvas:[{type:"line",x1:0,y1:30,x2:150,y2:30,lineWidth:.5}]},{text:name?`/ ${name} /`:"",fontSize:8,margin:[0,2,0,0]}]});
+  if(act)C.push({table:{widths:["*","*"],body:[
+    [{text:"ИСПОЛНИТЕЛЬ",bold:true},{text:"ЗАКАЗЧИК",bold:true}],
+    [{text:s.name||"",fontSize:8},{text:py.name||"",fontSize:8}],
+    [sigCell(s.director,j.sign),sigCell("",null)]]},layout:"noBorders"},stamp);
+  else{
+    C.push(signLine(isIp(s.name)?"Предприниматель":"Руководитель",s.director,j.sign));
+    if(s.accountant)C.push(signLine("Бухгалтер",s.accountant,null));
+    C.push(stamp);
+  }
+  return{pageSize:"A4",pageMargins:[40,32,40,32],defaultStyle:{font:"Roboto",fontSize:9,lineHeight:1.15},content:C,
+    info:{title,author:s.name||"Дело в коробке"}};
+}
+async function printInvoice(id,kind="invoice",btn){
+  const go=async()=>{
+    const[j,pdf]=await Promise.all([api("GET","/api/billing/invoice?id="+id),loadPdf()]);
+    const name=`${kind==="act"?"akt":"schet"}-${j.invoice.number}.pdf`;
+    await new Promise(res=>pdf.createPdf(docDefinition(kind,j)).download(name,res));
+  };
+  if(btn)await run(btn,"Готовлю…",go);else try{await go()}catch(e){fail(e.message)}
 }
 
 /* кабинет клиента: счета и услуги, ещё не вошедшие в счёт */
@@ -1332,7 +1763,7 @@ function renderPtBill(){
   const b=P.bill;if(!b){$("ptBillList").innerHTML=`<p class="hint">Загружаю…</p>`;$("ptChTable").innerHTML="";return}
   $("ptBillList").innerHTML=b.invoices.length?`<div class="table-wrap"><table class="pt-table"><thead><tr><th>№</th><th>Период</th><th class="num">Сумма</th><th>Статус</th><th></th></tr></thead><tbody>${b.invoices.map(i=>`<tr>
     <td class="mono">${esc(i.number)}</td><td class="mono">${fmtDay(i.period_from)} — ${fmtDay(i.period_to)}</td><td class="num mono"><b>${fmtRub(i.total)}</b></td><td>${invChip(i.status)}</td>
-    <td class="num"><button class="btn sm" type="button" data-ptinv="${i.id}">Счёт</button></td></tr>`).join("")}</tbody></table></div>`
+    <td class="num"><span class="row nowrap" style="justify-content:flex-end"><button class="btn sm" type="button" data-ptinv="${i.id}" data-kind="invoice">Счёт PDF</button><button class="btn sm ghost" type="button" data-ptinv="${i.id}" data-kind="act">Акт</button></span></td></tr>`).join("")}</tbody></table></div>`
     :`<p class="hint">Счетов пока нет.</p>`;
   const rows=b.charges,total=rows.reduce((a,c)=>a+c.amount,0);
   $("ptChTable").innerHTML=rows.length?`<div class="table-wrap"><table class="pt-table"><thead><tr><th>Дата</th><th>Услуга</th><th class="num">Кол-во</th><th class="num">Сумма</th><th>Комментарий</th></tr></thead><tbody>${rows.map(c=>`<tr>
@@ -1340,17 +1771,23 @@ function renderPtBill(){
     <tr><td colspan="3"><b>Итого без хранения</b></td><td class="num mono"><b>${fmtRub(total)}</b></td><td></td></tr></tbody></table></div>`
     :`<p class="hint">Новых услуг пока нет.</p>`;
 }
-$("ptBillList").addEventListener("click",e=>{const b=e.target.closest("[data-ptinv]");if(b)printInvoice(+b.dataset.ptinv)});
+$("ptBillList").addEventListener("click",e=>{const b=e.target.closest("[data-ptinv]");if(b)printInvoice(+b.dataset.ptinv,b.dataset.kind,b)});
 
 /* ---------- вкладки ---------- */
-const TABS=["rc","mv","pick","inv","stock","prod","cells","log","users","svc","bill","admin"];
+const TABS=["rc","mv","pick","inv","stock","prod","cells","log","svc","bill","team","me","access","admin"];
+function tabAllowed(name){
+  const b=$("tabs").querySelector(`[data-tab="${name}"]`),p=b&&b.dataset.perm;
+  if(!b||!me)return false;if(p==="admin")return isAdmin();if(p==="staff")return me.role!=="client";return can(p);
+}
 function setTab(name){
-  if(!TABS.includes(name)||((name==="admin"||name==="bill"||name==="users")&&!isAdmin()))name="rc";tab=name;
+  if(!TABS.includes(name)||!tabAllowed(name))name=TABS.find(tabAllowed)||"me";tab=name;
   [...$("tabs").children].forEach(b=>b.setAttribute("aria-selected",String(b.dataset.tab===name)));
   TABS.forEach(n=>$("view-"+n).hidden=n!==name);
   ls.set("tab",name);renderActive();
-  if(name==="users")loadUsers();
   if(name==="svc"||name==="bill")loadBilling();
+  if(name==="access")loadAccess();
+  if(name==="team")loadTeam();
+  if(name==="me")loadCabinet();
   const sc={rc:"rcScan",mv:"mvScan",inv:"invScan",pick:plan?"pkScan":null}[name];
   if(sc&&window.matchMedia("(pointer:fine)").matches)setTimeout(()=>$(sc).focus(),0);
   const b=$("tabs").querySelector(`[data-tab="${name}"]`);b&&b.scrollIntoView({inline:"nearest",block:"nearest"});
@@ -1358,7 +1795,7 @@ function setTab(name){
 $("tabs").addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b)setTab(b.dataset.tab)});
 document.addEventListener("click",e=>{const b=e.target.closest("[data-goto]");if(b)setTab(b.dataset.goto)});
 function renderActive(){
-  ({rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,users:renderUsers,svc:renderSvc,bill:renderBill,admin:()=>{$("appVersion").textContent=appVersion?`Версия приложения ${appVersion}`:""}})[tab]();
+  ({rc:renderRc,mv:renderMv,pick:()=>{renderFiles();renderPlan()},inv:renderInv,stock:renderStock,prod:renderProd,cells:renderCells,log:renderLog,svc:renderSvc,bill:renderBill,team:renderTeam,me:renderCabinet,access:renderAccess,admin:()=>{$("appVersion").textContent=appVersion?`Версия приложения ${appVersion}`:""}})[tab]();
 }
 function setStatus(off){
   let units=0;const cells=new Set();D.stock.forEach(r=>{units+=r.qty;cells.add(r.cell)});
@@ -1373,11 +1810,14 @@ let setupMode=false;
 function showLogin(needSetup){
   me=null;mode="app";P.data=null;P.bill=null;if(es){es.close();es=null}
   Object.assign(BL,{services:[],charges:[],invoices:[],summary:null,settings:null,draft:null});fillReq();
-  ["chTable","chKv","billKv","biDraft","biTable","tfTable","cpTable","ptBillList","ptChTable"].forEach(id=>$(id).innerHTML="");
+  ["chTable","chKv","billKv","biDraft","biTable","tfTable","cpTable","ptBillList","ptChTable","bkList"].forEach(id=>$(id).innerHTML="");
   ["chService","chfClient","biClient","cpClient"].forEach(id=>$(id).innerHTML="");
   // на общем телефоне или ТСД следующий вошедший (например, клиент) не должен получить данные предыдущего
-  D.stock=new Map();D.products=new Map();D.pidx=new Map();D.cells=new Set();D.ops=[];D.receipts=[];users=[];live=false;pendingClient.clear();
-  ["stockTable","lTable","uTable","pTable","cTable","rcHist","clientList","pvClient","stockKv","mvTable","invTable","rcTable","ptStockTable","ptRcList","ptOpsTable","ptKv"].forEach(id=>$(id).innerHTML="");
+  D.stock=new Map();D.products=new Map();D.pidx=new Map();D.cells=new Set();D.ops=[];D.receipts=[];live=false;
+  Object.assign(AC,{clients:[],banks:[],users:[],open:new Set(),cred:null,editCk:null});TM.data=null;ME.data=null;$("acClientForm").hidden=true;
+  ["acClients","acStaff","sfCred","tmGrid","tmSalary","fnList","meKv","meCal","meFines","meOpsKv","meOps","fnUser","ptnUser","tmDept"].forEach(id=>$(id).innerHTML="");
+  ["tmMonth","meMonth","sfPass"].forEach(id=>$(id).value="");
+  ["stockTable","lTable","pTable","cTable","rcHist","clientList","stockKv","mvTable","invTable","rcTable","ptStockTable","ptRcList","ptOpsTable","ptKv"].forEach(id=>$(id).innerHTML="");
   ["pickClient","fClient","pfClient","lClient"].forEach(id=>$(id).innerHTML="");
   $("status").textContent="";$("whoName").textContent="";$("ptWho").textContent="";
   setupMode=!!needSetup;
@@ -1413,8 +1853,9 @@ async function boot(){
   mode="app";
   $("whoName").textContent=me.name;
   $("login").hidden=true;$("portal").hidden=true;$("app").hidden=false;
+  [...$("tabs").children].forEach(b=>b.hidden=!tabAllowed(b.dataset.tab));
   setTab(ls.get("tab")||"rc");
-  load(ALL_PARTS);
+  if(hasData())load(ALL_PARTS);
   connectEvents();
 }
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&me)reloadAll()});
