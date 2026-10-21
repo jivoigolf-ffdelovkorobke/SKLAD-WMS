@@ -419,3 +419,18 @@ input:focus,select:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--br
 .side__h{margin:10px 10px 3px}
 .side__nav button{padding:8px 12px}
 @media (max-width:520px){.kv-lg>div:last-child:nth-child(odd){grid-column:1/-1}}
+/* заявки на поставку */
+.asn-list{display:flex;flex-direction:column;gap:8px}
+.asn-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(160px,1fr) auto;gap:12px;align-items:center;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--field)}
+.asn-row.cur{border-color:var(--brand);background:var(--brand-soft)}
+.asn-row__t{min-width:0;overflow-wrap:anywhere}
+.asn-row__p{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:.88rem}
+.progress.sm{height:6px;flex:1 1 100%}
+.card>summary .progress.sm{flex:1 1 100%;order:3}
+@media (max-width:700px){.asn-row{grid-template-columns:1fr}}
+/* вкладки кабинета клиента */
+#ptTabs{display:flex;gap:4px;padding-block:10px;margin-bottom:6px;overflow-x:auto;scrollbar-width:none;border-bottom:1px solid var(--line)}
+#ptTabs::-webkit-scrollbar{display:none}
+#ptTabs button{flex:0 0 auto;border:0;background:transparent;color:var(--muted);font:600 .92rem var(--font-body);padding:9px 16px;border-radius:999px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s}
+#ptTabs button:hover{color:var(--ink);background:var(--tint)}
+#ptTabs button[aria-selected="true"]{background:var(--ink);color:var(--bg)}

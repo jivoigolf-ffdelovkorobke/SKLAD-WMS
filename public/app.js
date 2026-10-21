@@ -22,7 +22,7 @@ const hasData=()=>can("ops")||can("stock");
 
 /* ---------- состояние ---------- */
 let me=null,live=false,appVersion="";
-const D={stock:new Map(),products:new Map(),pidx:new Map(),cells:new Set(),ops:[],receipts:[]};
+const D={stock:new Map(),products:new Map(),pidx:new Map(),cells:new Set(),ops:[],receipts:[],asn:[]};
 let tab="rc";
 
 /* ---------- обратная связь ---------- */
@@ -53,11 +53,12 @@ async function fetchParts(parts){
   if(j.cells)D.cells=new Set(j.cells);
   if(j.ops)D.ops=j.ops;
   if(j.receipts)D.receipts=j.receipts;
+  if(j.asn)D.asn=j.asn;
   live=true;refresh();
 }
 /* mode: "app" — складской интерфейс, "portal" — кабинет клиента (у клиента всегда, у сотрудника в режиме просмотра) */
 let mode="app";
-const ALL_PARTS=["stock","products","cells","ops","receipts"];
+const ALL_PARTS=["stock","products","cells","ops","receipts","asn"];
 function reloadAll(parts){
   if(mode==="portal"){loadPortal();return}
   const data=(parts||ALL_PARTS).filter(p=>ALL_PARTS.includes(p));if(data.length&&hasData())load(data);
@@ -327,7 +328,8 @@ const PAT={
   qty:["количество","кол-во","кол.","qty","quantity"],
   name:["наименование","название","товар","name"],
   cell:["ячейка","адрес","место"],
-  client:["клиент","продавец","селлер","владелец","организация","ип"]
+  client:["клиент","продавец","селлер","владелец","организация","ип"],
+  box:["№ тары","тары","тара","№ короба","номер короба","короб"]
 };
 function findCol(header,key,taken){
   const h=header.map(norm);
@@ -453,7 +455,8 @@ function renderRc(){
   const c=$("rcCommit");c.disabled=!rc.lines.some(l=>l.got>0);
   c.textContent=c.dataset.confirm?`Подтвердить: ${got} шт. ${rcHasCells()?"по ячейкам из списка":"в "+(rc.cell||BUF)}`:"Завершить приёмку";
   $("rcAll").hidden=!rc.lines.some(l=>l.expected!=null&&l.got<l.expected);c.classList.toggle("danger",!!c.dataset.confirm);c.classList.toggle("primary",!c.dataset.confirm);
-  renderRcHist();
+  renderRcHist();renderAsnPanel();
+  $("rcAsn").hidden=!rc.asn;$("rcAsn").textContent=rc.asn?`по заявке клиента`:"";
   if(!has){box.innerHTML=`<div class="empty"><b>Сканируйте товар из коробки</b>Каждый скан добавляет указанное количество. Можно ввести артикул вручную и нажать OK.</div>`;return}
   const lines=[...rc.lines].sort((a,b)=>(a.article===rc.last?-1:b.article===rc.last?1:0));
   box.innerHTML=`<div class="table-wrap"><table><thead><tr>${rcHasCells()?"<th>Ячейка</th>":""}<th>Артикул</th><th>Наименование</th><th class="num">Ожидалось</th><th class="num">Принято</th><th>Статус</th></tr></thead><tbody>${lines.map(l=>{
@@ -521,13 +524,13 @@ $("rcCommit").addEventListener("click",async()=>{
     fail(`Похоже на клиента «${sim}». Если это он, выберите его в поле «Клиент», иначе товар попадёт в отдельный кабинет. Нажмите ещё раз, чтобы принять как «${rc.client}».`);return}
   if(!c.dataset.confirm){c.dataset.confirm="1";renderRc();return}
   delete c.dataset.confirm;delete c.dataset.simFor;
-  const body={client:rc.client,doc:rc.doc,cell:rc.cell,lines:rc.lines.map(l=>({article:l.article,name:l.name,barcode:l.barcode||"",expected:l.expected,got:l.got,cell:l.cell||""}))};
+  const body={client:rc.client,doc:rc.doc,cell:rc.cell,asn_id:rc.asn||undefined,lines:rc.lines.map(l=>({article:l.article,name:l.name,barcode:l.barcode||"",expected:l.expected,got:l.got,cell:l.cell||""}))};
   const res=await run(c,"Сохраняю…",()=>api("POST","/api/receive",body));
   if(!res){renderRc();return}
   rcLast={...body,ts:new Date().toISOString(),user_name:me.name};
   const got=body.lines.reduce((a,l)=>a+l.got,0),short=rcDiff(body.lines);
   rc={client:"",doc:"",cell:BUF,lines:[],unknown:null};rcSave();
-  await load(["stock","products","ops","receipts","cells"]);
+  await load(["stock","products","ops","receipts","cells","asn"]);
   $("rcDone").hidden=false;$("rcDone").innerHTML=`<div class="notice ok">Принято ${got} шт. от ${esc(rcLast.client)} в ячейку ${esc(rcLast.cell)}.${short?` Расхождений с ожидаемым: ${short}.`:""}</div>
     <div class="row"><button class="btn" id="rcAct" type="button">Скачать акт приёмки</button><button class="btn ghost" id="rcToMv" type="button">Перейти к размещению</button></div>`;
   renderRc();okb("Приёмка проведена");
@@ -535,6 +538,43 @@ $("rcCommit").addEventListener("click",async()=>{
 $("rcDone").addEventListener("click",e=>{
   if(e.target.id==="rcToMv"){mv.from=rcLast?rcLast.cell:BUF;mv.take={};mvSave();setTab("mv");return}
   if(e.target.id==="rcAct"&&rcLast)downloadAct(rcLast);
+});
+/* ---------- заявки клиентов на поставку: что едет на склад и что из этого уже принято ---------- */
+const ASN_ST={new:["Ждёт приёмки","warn"],partial:["Принимается","info"],done:["Принята","ok"],closed:["Закрыта",""]};
+const asnChip=a=>{const[t,c]=ASN_ST[a.status]||[a.status,""];return`<span class="chip ${c}">${t}</span>`};
+const asnBar=a=>`<div class="progress sm"><i style="width:${a.total?Math.round(a.got/a.total*100):0}%"></i></div>`;
+/* файл отправки клиента: штрихкод и количество обязательны, остальное — если есть */
+async function readAsnFile(file){
+  const m=await readMatrix(file);const d=detect(m,["qty"]);
+  if(d.cols.qty<0)throw new Error("Не нашёл столбец с количеством");
+  if(d.cols.bc<0&&d.cols.art<0)throw new Error("Нужен столбец со штрихкодом или артикулом");
+  const lines=[];
+  for(let r=d.hdr+1;r<m.length;r++){const row=m[r]||[];const q=num(row[d.cols.qty]);
+    const barcode=cellv(row,d.cols.bc).replace(/\.0+$/,""),article=cellv(row,d.cols.art);
+    if(!(q>0)||(!barcode&&!article))continue;
+    lines.push({barcode,article,name:cellv(row,d.cols.name),qty:Math.round(q),box:cellv(row,d.cols.box)})}
+  if(!lines.length)throw new Error("В файле нет строк с количеством");
+  return{title:file.name.replace(/\.[^.]+$/,""),lines,units:lines.reduce((a,l)=>a+l.qty,0),boxes:new Set(lines.map(l=>l.box).filter(Boolean)).size};
+}
+function renderAsnPanel(){
+  const open=D.asn.filter(a=>a.status==="new"||a.status==="partial");
+  $("asnPanel").hidden=!open.length;$("asnCount").textContent=open.length?`${open.length} ${plural(open.length,"заявка","заявки","заявок")}`:"";
+  $("asnList").innerHTML=`<div class="asn-list">${open.map(a=>`<div class="asn-row${rc.asn===a.id?" cur":""}">
+    <div class="asn-row__t"><b>${esc(a.client)}</b> · ${esc(a.title)}<br><span class="hint">${fmtTs(a.created)} · ${a.lines.length} ${plural(a.lines.length,"позиция","позиции","позиций")}${a.boxes?` · ${a.boxes} ${plural(a.boxes,"короб","короба","коробов")}`:""}</span></div>
+    <div class="asn-row__p">${asnChip(a)}<span class="mono"><b>${a.got}</b> из ${a.total} шт.</span>${asnBar(a)}</div>
+    <div class="row nowrap"><button class="btn sm primary" type="button" data-asnrecv="${a.id}">${rc.asn===a.id?"Принимается":"Принимать"}</button><button class="btn sm ghost" type="button" data-asnclose="${a.id}">Закрыть</button></div></div>`).join("")}</div>`;
+}
+$("asnList").addEventListener("click",async e=>{
+  const r=e.target.closest("[data-asnrecv]"),c=e.target.closest("[data-asnclose]");
+  if(r){const a=D.asn.find(x=>x.id===+r.dataset.asnrecv);if(!a||rc.asn===a.id)return;
+    if(rc.lines.some(l=>l.got>0)&&!r.dataset.confirm){r.dataset.confirm="1";r.textContent="Сбросить текущую?";fail("В приёмке уже есть отсканированный товар. Нажмите ещё раз, чтобы начать приёмку по заявке.");return}
+    // в приёмку попадает только то, что ещё не принято по заявке
+    rc={client:a.client,doc:a.title,cell:BUF,unknown:null,asn:a.id,
+      lines:a.lines.filter(l=>l.qty>l.got).map(l=>({article:l.article,name:l.name,barcode:l.barcode||"",expected:l.qty-l.got,got:0}))};
+    rcSave();$("rcDone").hidden=true;renderRc();okb(`Приёмка по заявке «${a.title}»: ожидается ${a.total-a.got} шт.`);$("rcScan").focus();return}
+  if(c){if(!c.dataset.confirm){c.dataset.confirm="1";c.textContent="Остаток не приедет?";return}
+    const res=await run(c,"Закрываю…",()=>api("POST","/api/asn/close",{id:+c.dataset.asnclose}));
+    if(res){if(rc.asn===+c.dataset.asnclose){delete rc.asn;rcSave()}okb("Заявка закрыта");load(["asn"])}}
 });
 $("rcReset").addEventListener("click",e=>{const b=e.currentTarget;
   if(!b.dataset.confirm&&rc.lines.length){b.dataset.confirm="1";b.textContent="Точно сбросить?";b.classList.add("danger");setTimeout(()=>{delete b.dataset.confirm;b.textContent="Сбросить";b.classList.remove("danger")},3000);return}
@@ -1403,7 +1443,7 @@ function showPortal(previewClient){
   $("ptPreview").hidden=!P.preview;$("ptPreviewText").textContent=P.preview?`Так кабинет видит клиент «${P.client}»`:"";
   $("ptLogout").hidden=P.preview;$("ptPassTab").hidden=P.preview||!me.can_change_pw;
   $("ptClient").textContent=P.client;$("ptUpdated").textContent="";$("ptStatus").textContent="Загрузка…";
-  ["ptStockTable","ptRcList","ptOpsTable","ptKv","ptBillList","ptChTable"].forEach(id=>$(id).innerHTML="");
+  ["ptStockTable","ptRcList","ptOpsTable","ptKv","ptBillList","ptChTable","ptAsnList","ptAsnDraft"].forEach(id=>$(id).innerHTML="");P.asnDraft=null;
   setPtTab(P.preview&&ls.get("ptTab")==="pass"?"stock":(ls.get("ptTab")||"stock"));
   window.scrollTo(0,0);
   loadPortal();
@@ -1458,6 +1498,7 @@ function renderPtStock(){
     <td class="wrap-any">${esc(x.name)}${x.barcode?`<br><span class="hint mono">${esc(x.barcode)}</span>`:""}</td></tr>`}).join("")}</tbody></table></div>`;
 }
 function renderPtRc(){
+  renderPtAsn();
   const box=$("ptRcList"),list=P.data.receipts;
   if(!list.length){box.innerHTML=`<p class="hint">Принятых поставок пока нет. Когда склад примет вашу поставку, здесь появится акт приёмки с расхождениями, если они были.</p>`;return}
   box.innerHTML=list.map((r,i)=>{const got=r.lines.reduce((a,l)=>a+(l.got||0),0),exp=r.lines.reduce((a,l)=>a+(l.expected||0),0);
@@ -1471,6 +1512,48 @@ $("ptRcList").addEventListener("click",async e=>{
     const res=await run(e.target,"Загружаю…",()=>api("GET","/api/my?"+q));
     if(res){P.data.receipts=list.concat(res.receipts);P.data.rcMore=res.rcMore;renderPtRc()}return}
   const b=e.target.closest("[data-ptact]");if(!b)return;const r=P.data.receipts[+b.dataset.ptact];downloadAct({...r,client:P.data.client,user_name:"склад «Дело в коробке»"})});
+/* кабинет: клиент загружает список отправленного и видит, что склад уже принял, а что ещё нет */
+function renderPtAsn(){
+  const d=P.asnDraft;
+  $("ptAsnDraft").innerHTML=d?`<div class="sub-form">
+    <label class="f">Название отправки<input id="ptAsnTitle" value="${esc(d.title)}" maxlength="160"></label>
+    <div class="kv"><div><span>Позиций</span><b>${d.lines.length}</b></div><div><span>Штук</span><b>${d.units}</b></div><div><span>Коробов</span><b>${d.boxes||"—"}</b></div></div>
+    <div class="table-wrap"><table class="pt-table"><thead><tr><th>Штрихкод</th><th>Наименование</th><th class="num">Кол-во</th><th>Короб</th></tr></thead><tbody>${d.lines.slice(0,8).map(l=>`<tr><td class="mono">${esc(l.barcode||l.article)}</td><td class="wrap-any">${esc(l.name)}</td><td class="num mono">${l.qty}</td><td class="mono">${esc(l.box)}</td></tr>`).join("")}
+    ${d.lines.length>8?`<tr><td colspan="4" class="hint">…и ещё ${d.lines.length-8} ${plural(d.lines.length-8,"строка","строки","строк")}</td></tr>`:""}</tbody></table></div>
+    <div class="row"><button class="btn primary" type="button" id="ptAsnSend">Отправить на склад</button><button class="btn ghost" type="button" id="ptAsnCancel">Отмена</button></div></div>`:"";
+  const list=(P.data&&P.data.asn)||[];
+  $("ptAsnList").innerHTML=list.length?`<div class="cards">${list.map(a=>{const left=a.lines.filter(l=>l.qty>l.got);
+    return`<details class="card" data-asn="${a.id}"${P.asnOpen&&P.asnOpen.has(String(a.id))?" open":""}><summary><span class="card__t"><b>${esc(a.title)}</b>${asnChip(a)}</span><span class="card__m hint">${fmtTs(a.created)} · принято <b class="mono">${a.got}</b> из ${a.total} шт.${a.status==="partial"||a.status==="new"?` · ещё не принято ${a.total-a.got}`:""}</span>${asnBar(a)}</summary>
+    <div class="card__body">
+      <div class="table-wrap"><table class="pt-table"><thead><tr><th>Артикул</th><th>Наименование</th><th class="num">Отправлено</th><th class="num">Принято</th><th class="num">Осталось</th></tr></thead><tbody>${[...a.lines].sort((x,y)=>(y.qty-y.got)-(x.qty-x.got)).map(l=>{const rest=Math.max(0,l.qty-l.got);return`<tr>
+        <td class="mono wrap-any">${esc(l.article)}${l.barcode?`<br><span class="hint">${esc(l.barcode)}</span>`:""}</td><td class="wrap-any">${esc(l.name)}</td><td class="num mono">${l.qty}</td>
+        <td class="num mono">${l.got}${l.got>l.qty?` <span class="chip warn">+${l.got-l.qty}</span>`:""}</td><td class="num">${rest?`<span class="chip warn">${rest}</span>`:'<span class="chip ok">✓</span>'}</td></tr>`}).join("")}</tbody></table></div>
+      <div class="row">${left.length?`<button class="btn sm" type="button" data-ptasnx="${a.id}">Скачать, что ещё не принято</button>`:""}${a.status==="new"?`<button class="btn sm ghost" type="button" data-ptasndel="${a.id}">Отозвать заявку</button>`:""}</div>
+    </div></details>`}).join("")}</div>`
+    :`<p class="hint">Вы ещё не отправляли списки. Загрузите файл выше — склад увидит его сразу.</p>`;
+}
+// живые обновления перерисовывают список: введённое название и раскрытые карточки не теряются
+$("ptAsnDraft").addEventListener("input",e=>{if(e.target.id==="ptAsnTitle"&&P.asnDraft)P.asnDraft.title=e.target.value});
+$("ptAsnList").addEventListener("toggle",e=>{const id=e.target.dataset&&e.target.dataset.asn;if(!id)return;P.asnOpen=P.asnOpen||new Set();e.target.open?P.asnOpen.add(id):P.asnOpen.delete(id)},true);
+$("ptAsnFile").addEventListener("change",async e=>{
+  const file=e.target.files[0];e.target.value="";if(!file)return;
+  try{P.asnDraft=await readAsnFile(file);renderPtAsn();okb(`В файле ${P.asnDraft.lines.length} строк, ${P.asnDraft.units} шт. Проверьте и отправьте.`)}
+  catch(err){fail("Не удалось прочитать файл: "+(err.message||err))}
+});
+$("ptAsnDraft").addEventListener("click",async e=>{
+  if(e.target.id==="ptAsnCancel"){P.asnDraft=null;renderPtAsn();return}
+  if(e.target.id!=="ptAsnSend")return;
+  const d=P.asnDraft,body={title:$("ptAsnTitle").value.trim()||d.title,lines:d.lines};if(P.preview)body.client=P.client;
+  const res=await run(e.target,"Отправляю…",()=>api("POST","/api/asn",body));
+  if(res){P.asnDraft=null;okb(`Заявка отправлена: ${res.lines} ${plural(res.lines,"позиция","позиции","позиций")}, ${res.units} шт.`);await loadPortal()}
+});
+$("ptAsnList").addEventListener("click",async e=>{
+  const x=e.target.closest("[data-ptasnx]"),del=e.target.closest("[data-ptasndel]");
+  if(x){const a=P.data.asn.find(v=>v.id===+x.dataset.ptasnx);
+    saveXlsx(`ne-prinyato-${(a.created||"").slice(0,10)}.xlsx`,[["Артикул","Наименование","Штрихкод","Отправлено","Принято","Осталось"],...a.lines.filter(l=>l.qty>l.got).map(l=>[l.article,l.name,l.barcode,l.qty,l.got,l.qty-l.got])],"Не принято");return}
+  if(del){if(!del.dataset.confirm){del.dataset.confirm="1";del.textContent="Точно отозвать?";return}
+    const res=await run(del,"Отзываю…",()=>api("POST","/api/asn/delete",{id:+del.dataset.ptasndel}));if(res){okb("Заявка отозвана");loadPortal()}}
+});
 function ptOpsRows(){
   const q=norm($("ptOpsQ").value),t=$("ptOpsType").value;
   return P.data.ops.filter(o=>(!t||o.type===t)&&(!q||[o.article,o.name,o.doc].some(v=>norm(v).includes(q))));
@@ -1817,6 +1900,9 @@ function renderHome(){
     <div><span>Свободных ячеек</span><b>${free}</b><small>из ${D.cells.size}</small></div>`;
   const noBc=[...D.products.values()].filter(p=>!(p.barcodes||[]).length).length;
   const todo=[];
+  const waiting=D.asn.filter(a=>a.status==="new"||a.status==="partial");
+  if(waiting.length&&tabAllowed("rc")){const left=waiting.reduce((s,a)=>s+a.total-a.got,0);
+    todo.push(["warn",`${waiting.length} ${plural(waiting.length,"поставка","поставки","поставок")} от клиентов ${plural(waiting.length,"ждёт","ждут","ждут")} приёмки`,`${left} шт.: ${[...new Set(waiting.map(a=>a.client))].slice(0,3).join(", ")}`,"rc","Принять"])}
   if(buf&&tabAllowed("mv"))todo.push(["warn",`Разместить ${buf} шт. из зоны приёмки`,`${bufRows} ${plural(bufRows,"позиция","позиции","позиций")} лежат в PRIEM`,"mv","Разместить"]);
   if(noBc&&tabAllowed("prod"))todo.push(["",`У ${noBc} ${plural(noBc,"товара","товаров","товаров")} нет штрихкода`,"Сканер их не узнает — добавьте штрихкоды или напечатайте этикетки","prod","Открыть"]);
   if(!D.cells.size&&tabAllowed("cells"))todo.push(["",`Ячейки ещё не созданы`,"Создайте стеллажи, чтобы строить маршрут сборки","cells","Создать"]);
@@ -1914,7 +2000,7 @@ function showLogin(needSetup){
   ["chTable","chKv","billKv","biDraft","biTable","tfTable","cpTable","ptBillList","ptChTable","bkList"].forEach(id=>$(id).innerHTML="");
   ["chService","chfClient","biClient","cpClient"].forEach(id=>$(id).innerHTML="");
   // на общем телефоне или ТСД следующий вошедший (например, клиент) не должен получить данные предыдущего
-  D.stock=new Map();D.products=new Map();D.pidx=new Map();D.cells=new Set();D.ops=[];D.receipts=[];live=false;
+  D.stock=new Map();D.products=new Map();D.pidx=new Map();D.cells=new Set();D.ops=[];D.receipts=[];D.asn=[];live=false;
   Object.assign(AC,{clients:[],banks:[],users:[],open:new Set(),cred:null,editCk:null});TM.data=null;ME.data=null;$("acClientForm").hidden=true;
   ["acClients","acStaff","sfCred","tmGrid","tmSalary","fnList","meKv","meCal","meFines","meOpsKv","meOps","fnUser","ptnUser","tmDept"].forEach(id=>$(id).innerHTML="");
   ["tmMonth","meMonth","sfPass"].forEach(id=>$(id).value="");

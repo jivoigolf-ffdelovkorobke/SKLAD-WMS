@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Склад">
-<link rel="stylesheet" href="app.css?v=1.5.0">
+<link rel="stylesheet" href="app.css?v=1.6.0">
 </head>
 <body>
 
@@ -98,8 +98,12 @@
 
   <!-- ============ ПРИЁМКА ============ -->
   <section class="view" id="view-rc" hidden>
+    <div class="panel" id="asnPanel" hidden>
+      <div class="row between"><h2>Ожидаемые поставки от клиентов</h2><span class="chip info" id="asnCount"></span></div>
+      <div id="asnList"></div>
+    </div>
     <div class="panel">
-      <div class="row between"><h2>Приёмка поставки</h2><span class="chip" id="rcState">Новая</span></div>
+      <div class="row between"><h2>Приёмка поставки</h2><span class="row"><span class="chip info" id="rcAsn" hidden></span><span class="chip" id="rcState">Новая</span></span></div>
       <div class="row">
         <label class="f">Клиент<input id="rcClient" list="clientList" placeholder="ООО «Пример»"></label>
         <label class="f">Документ / № поставки<input id="rcDoc" placeholder="необязательно"></label>
@@ -683,6 +687,16 @@
 
   <section class="view" id="pt-rc" hidden>
     <div class="panel">
+      <div class="row between"><h2>Отправить поставку на склад</h2><label class="btn primary" for="ptAsnFile">Загрузить список товаров</label></div>
+      <input type="file" id="ptAsnFile" accept=".xlsx,.xls,.csv" hidden>
+      <p class="hint">Файл Excel или CSV со столбцами: Штрихкод, Количество; по желанию Наименование, Артикул, № короба. Склад увидит, что вы отправили, и примет товар по этому списку.</p>
+      <div id="ptAsnDraft"></div>
+    </div>
+    <div class="panel">
+      <h2>Мои отправки</h2>
+      <div id="ptAsnList"></div>
+    </div>
+    <div class="panel">
       <h2>Принятые поставки</h2>
       <div class="rc-hist" id="ptRcList"></div>
     </div>
@@ -750,6 +764,6 @@
 <script src="vendor/xlsx.full.min.js" defer></script>
 <script src="vendor/JsBarcode.all.min.js" defer></script>
 <script src="vendor/zxing.min.js" defer></script>
-<script src="app.js?v=1.5.0" defer></script>
+<script src="app.js?v=1.6.0" defer></script>
 </body>
 </html>

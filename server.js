@@ -133,6 +133,14 @@ CREATE TABLE IF NOT EXISTS client_subs(id INTEGER PRIMARY KEY, ckey TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS bank_accounts(id INTEGER PRIMARY KEY, title TEXT NOT NULL DEFAULT '', bank_name TEXT NOT NULL, bik TEXT NOT NULL DEFAULT '',
   account TEXT NOT NULL, corr_account TEXT NOT NULL DEFAULT '', is_default INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, created TEXT NOT NULL);
 `);
+/* Версия 1.6: заявки на поставку (ASN). Клиент загружает список того, что отправил на склад; склад принимает по нему,
+   и обе стороны видят, сколько уже принято и что ещё нет. Приёмка помнит, по какой заявке шла. */
+db.exec(`
+CREATE TABLE IF NOT EXISTS asn(id INTEGER PRIMARY KEY, ckey TEXT NOT NULL, client TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+  lines TEXT NOT NULL, created TEXT NOT NULL, created_by INTEGER, closed TEXT, closed_by INTEGER);
+CREATE INDEX IF NOT EXISTS asn_ckey ON asn(ckey, id);
+`);
+if (!hasCol("receipts", "asn_id")) db.exec("ALTER TABLE receipts ADD COLUMN asn_id INTEGER");
 // расчётный счёт из реквизитов версии 1.2 становится основным
 if (db.prepare("SELECT COUNT(*) n FROM bank_accounts").get().n === 0) {
   const s = Object.fromEntries(db.prepare("SELECT key, value FROM settings").all().map(r => [r.key, r.value]));
@@ -380,7 +388,82 @@ route("GET", "/api/data", "perm:ops|stock", ({ url }) => {
   if (parts.includes("cells")) out.cells = db.prepare("SELECT cell FROM cells").all().map(c => c.cell);
   if (parts.includes("ops")) out.ops = db.prepare("SELECT o.*, u.name AS user_name FROM ops o LEFT JOIN users u ON u.id=o.user_id ORDER BY o.id DESC LIMIT 500").all();
   if (parts.includes("receipts")) out.receipts = db.prepare("SELECT r.*, u.name AS user_name FROM receipts r LEFT JOIN users u ON u.id=r.user_id ORDER BY r.id DESC LIMIT 50").all().map(r => ({ ...r, lines: JSON.parse(r.lines) }));
+  // заявки: все незакрытые и закрытые за последние 30 дней
+  if (parts.includes("asn")) out.asn = db.prepare("SELECT * FROM asn WHERE closed IS NULL OR closed>? ORDER BY id DESC LIMIT 300").all(new Date(Date.now() - 30 * 864e5).toISOString()).map(asnView);
   return out;
+});
+
+/* ---------- заявки на поставку ---------- */
+/* строка заявки узнаётся в приёмке по штрихкоду, а если его нет — по артикулу */
+const asnKey = l => l.barcode ? "b:" + l.barcode : "a:" + norm(l.article);
+function asnView(a) {
+  const lines = JSON.parse(a.lines).map(l => ({ ...l, got: 0 }));
+  const byBc = new Map(), byArt = new Map();
+  for (const l of lines) { if (l.barcode) byBc.set(l.barcode, l); byArt.set(norm(l.article), l); }
+  const receipts = db.prepare("SELECT id, ts, lines FROM receipts WHERE asn_id=? ORDER BY id").all(a.id);
+  for (const r of receipts) for (const rl of JSON.parse(r.lines)) {
+    if (!(rl.got > 0)) continue;
+    const l = (rl.barcode && byBc.get(rl.barcode)) || byArt.get(norm(rl.article));
+    if (l) l.got += rl.got;
+  }
+  const total = lines.reduce((s, l) => s + l.qty, 0), got = lines.reduce((s, l) => s + Math.min(l.got, l.qty), 0);
+  const extra = lines.reduce((s, l) => s + Math.max(0, l.got - l.qty), 0);
+  const status = a.closed ? "closed" : got === 0 ? "new" : got >= total ? "done" : "partial";
+  return { id: a.id, client: a.client, title: a.title, created: a.created, closed: a.closed, status, total, got, extra,
+    boxes: new Set(lines.flatMap(l => l.boxes || [])).size, receipts: receipts.map(r => ({ id: r.id, ts: r.ts })), lines };
+}
+/* кому чья заявка: клиент — только свои, склад (операции или остатки) — любые */
+function asnClient(user, client) {
+  if (user.role === "client") return user.client;
+  if (can(user, "ops") || can(user, "stock")) { const c = str(client, 160); if (!norm(c)) throw bad("Укажите клиента"); return c; }
+  throw new HttpError(403, "Нет доступа");
+}
+route("POST", "/api/asn", "any", ({ body, user }) => {
+  const client = asnClient(user, body.client), ck = norm(client);
+  const raw = Array.isArray(body.lines) ? body.lines : [];
+  if (raw.length > 5000) throw bad("Слишком большой список: не больше 5000 строк");
+  // артикул: по штрихкоду из справочника клиента, иначе по цифрам из наименования («7189538» = 71895/38), иначе как в файле
+  const prods = db.prepare("SELECT article, name, barcodes FROM products WHERE ckey=?").all(ck);
+  const byBc = new Map(), byDigits = new Map();
+  for (const p of prods) { for (const b of JSON.parse(p.barcodes)) byBc.set(b, p); const d = p.article.replace(/\D/g, ""); if (d.length >= 5 && !byDigits.has(d)) byDigits.set(d, p); }
+  const merged = new Map();
+  for (const r of raw) {
+    const qty = int(r.qty), barcode = str(r.barcode, 64).replace(/\.0+$/, ""), name = str(r.name, 300), box = str(r.box, 40);
+    let article = str(r.article, 120);
+    if (!(qty > 0) || (!barcode && !article)) continue;
+    const p = byBc.get(barcode) || (!article && byDigits.get((name.match(/\d{5,}/g) || []).sort((a, b) => b.length - a.length)[0] || ""));
+    if (p) article = p.article; else if (!article) article = (name.match(/\d{5,}/g) || []).sort((a, b) => b.length - a.length)[0] || barcode;
+    const l = { article, name: p && p.name ? p.name : name, barcode, qty, boxes: box ? [box] : [], known: !!p };
+    const k = asnKey(l), was = merged.get(k);
+    if (was) { was.qty += qty; if (box && !was.boxes.includes(box)) was.boxes.push(box); } else merged.set(k, l);
+  }
+  const lines = [...merged.values()];
+  if (!lines.length) throw bad("В файле нет строк со штрихкодом или артикулом и количеством");
+  const title = str(body.title, 160) || `Поставка от ${dayOf(now())}`;
+  const id = Number(db.prepare("INSERT INTO asn(ckey,client,title,lines,created,created_by) VALUES(?,?,?,?,?,?)").run(ck, client, title, JSON.stringify(lines), now(), user.id).lastInsertRowid);
+  broadcast(["asn"], [ck]);
+  return { ok: true, id, lines: lines.length, units: lines.reduce((s, l) => s + l.qty, 0), unknown: lines.filter(l => !l.known).length };
+});
+function asnFor(user, id) {
+  const a = db.prepare("SELECT * FROM asn WHERE id=?").get(int(id));
+  if (!a || (user.role === "client" && a.ckey !== norm(user.client))) throw new HttpError(404, "Заявка не найдена");
+  return a;
+}
+/* клиент может отозвать заявку, пока по ней ничего не принято; склад закрывает, если остаток не приедет */
+route("POST", "/api/asn/delete", "any", ({ body, user }) => {
+  const a = asnFor(user, body.id);
+  if (user.role !== "client" && !can(user, "ops") && !can(user, "stock")) throw new HttpError(403, "Нет доступа");
+  if (db.prepare("SELECT 1 FROM receipts WHERE asn_id=? LIMIT 1").get(a.id)) throw conflict("По заявке уже есть приёмка — её можно только закрыть на складе");
+  db.prepare("DELETE FROM asn WHERE id=?").run(a.id);
+  broadcast(["asn"], [a.ckey]);
+  return { ok: true };
+});
+route("POST", "/api/asn/close", "perm:ops|stock", ({ body, user }) => {
+  const a = asnFor(user, body.id);
+  if (body.open) db.prepare("UPDATE asn SET closed=NULL, closed_by=NULL WHERE id=?").run(a.id);
+  else db.prepare("UPDATE asn SET closed=?, closed_by=? WHERE id=?").run(now(), user.id, a.id);
+  broadcast(["asn"], [a.ckey]);
+  return { ok: true };
 });
 
 route("GET", "/api/events", "any", ({ req, res, user }) => {
@@ -417,7 +500,8 @@ route("GET", "/api/my", "any", ({ user, url }) => {
   // момент последнего изменения: строка остатков могла исчезнуть при полном списании, поэтому учитываем и журнал
   const lastOp = (db.prepare("SELECT MAX(ts) t FROM ops WHERE ckey=?").get(ck) || {}).t || "";
   const updated = stock.reduce((m, s) => (s.updated > m ? s.updated : m), lastOp);
-  return { client: named ? named.client : client, stock, products, receipts, rcMore, ops, updated };
+  const asn = db.prepare("SELECT * FROM asn WHERE ckey=? ORDER BY id DESC LIMIT 100").all(ck).map(asnView);
+  return { client: named ? named.client : client, stock, products, receipts, rcMore, ops, updated, asn };
 });
 
 /* Смена своего пароля (любой вошедший пользователь) */
@@ -444,6 +528,14 @@ route("POST", "/api/receive", "perm:ops", ({ body, user }) => {
   })).filter(l => l.article);
   if (!lines.some(l => l.got > 0)) throw bad("Нечего принимать");
   if (lines.some(l => l.got < 0)) throw bad("Количество не может быть отрицательным");
+  let asnId = null;
+  if (body.asn_id) {
+    const a = db.prepare("SELECT id, ckey, closed FROM asn WHERE id=?").get(int(body.asn_id));
+    if (!a) throw bad("Заявка на поставку не найдена");
+    if (a.ckey !== norm(client)) throw bad("Заявка относится к другому клиенту");
+    if (a.closed) throw conflict("Заявка уже закрыта");
+    asnId = a.id;
+  }
   const id = tx(() => {
     addCell(cell);
     let units = 0;
@@ -459,9 +551,11 @@ route("POST", "/api/receive", "perm:ops", ({ body, user }) => {
       }
     }
     autoCharge(user, "receive", client, units, doc ? `Приёмка ${doc}` : "Приёмка");
-    return Number(Q.rcIns.run(now(), user.id, client, doc, cell, JSON.stringify(lines), norm(client)).lastInsertRowid);
+    const rid = Number(Q.rcIns.run(now(), user.id, client, doc, cell, JSON.stringify(lines), norm(client)).lastInsertRowid);
+    if (asnId) db.prepare("UPDATE receipts SET asn_id=? WHERE id=?").run(asnId, rid);
+    return rid;
   });
-  broadcast(["stock", "products", "ops", "receipts", "cells", "billing"], [norm(client)]);
+  broadcast(["stock", "products", "ops", "receipts", "cells", "billing", "asn"], [norm(client)]);
   return { ok: true, id };
 });
 
