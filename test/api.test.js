@@ -231,3 +231,18 @@ test("приёмка по списку с ячейками: товар сраз�
   assert.deepEqual(mine, ["B-01-1-02:Y-1:5", "D-02-1-03:Y-1:3", "PRIEM:Y-2:2"]);
   assert.ok(d.cells.includes("B-01-1-02") && d.cells.includes("D-02-1-03"));
 });
+
+test("переименование клиента сливает два написания в одно", async () => {
+  await admin("POST", "/api/receive", { client: "ИП Чипчиков", cell: "A-09-1-01", lines: [{ article: "Z-1", barcode: "4600000000901", got: 4 }] });
+  await admin("POST", "/api/receive", { client: "ИП Чипчиков Р.", cell: "A-09-1-01", lines: [{ article: "Z-1", got: 6 }, { article: "Z-2", got: 1 }] });
+  await admin("POST", "/api/users", { name: "Чипчиков", login: "chip", password: "123456", role: "client", client: "ИП Чипчиков" });
+  const r = await admin("POST", "/api/clients/rename", { from: "ИП Чипчиков", to: "ИП Чипчиков Р." });
+  assert.equal(r.ok, true); assert.equal(r.units, 4); assert.equal(r.logins, 1);
+  const d = await admin("GET", "/api/data");
+  const rows = d.stock.filter(s => s.client.startsWith("ИП Чипчиков")).map(s => `${s.client}|${s.cell}|${s.article}|${s.qty}`).sort();
+  assert.deepEqual(rows, ["ИП Чипчиков Р.|A-09-1-01|Z-1|10", "ИП Чипчиков Р.|A-09-1-01|Z-2|1"]);
+  const p = d.products.filter(x => x.article === "Z-1");
+  assert.equal(p.length, 1); assert.deepEqual(p[0].barcodes, ["4600000000901"]);
+  const u = (await admin("GET", "/api/users")).users.find(x => x.login === "chip");
+  assert.equal(u.client, "ИП Чипчиков Р.");
+});

@@ -1126,7 +1126,8 @@ function renderAcClients(){
     <summary><span class="card__t"><b>${esc(c.name)}</b>${c.inn?`<span class="hint mono">ИНН ${esc(c.inn)}</span>`:c.carded?"":`<span class="chip warn">нет реквизитов</span>`}</span>
       <span class="card__m"><span class="chip">${c.accounts.filter(a=>a.active).length} ${plural(c.accounts.filter(a=>a.active).length,"логин","логина","логинов")}</span>${c.subs.length?`<span class="chip info">${c.subs.length} ${plural(c.subs.length,"подразделение","подразделения","подразделений")}</span>`:""}</span></summary>
     <div class="card__body">
-      <div class="row"><button class="btn sm" type="button" data-cedit>Реквизиты</button><button class="btn sm ghost" type="button" data-cview>Открыть кабинет клиента</button></div>
+      <div class="row"><button class="btn sm" type="button" data-cedit>Реквизиты</button><button class="btn sm ghost" type="button" data-cview>Открыть кабинет клиента</button><button class="btn sm ghost" type="button" data-crename>Переименовать</button></div>
+      <div class="row" data-renbox hidden><input data-newname value="${esc(c.name)}" aria-label="Новое название"><button class="btn sm primary" type="button" data-rengo>Сохранить название</button></div>
       ${c.address||c.kpp||c.ogrn?`<p class="hint">${[c.kpp&&"КПП "+c.kpp,c.ogrn&&"ОГРН "+c.ogrn,c.address].filter(Boolean).map(esc).join(" · ")}</p>`:""}
       <h3>Подразделения</h3>
       ${c.subs.length?`<div class="list">${c.subs.map(s=>`<div class="list__row" data-sub="${s.id}">
@@ -1172,6 +1173,14 @@ $("acClients").addEventListener("click",async e=>{
   const c=AC.clients.find(x=>x.ckey===card.dataset.ck);if(!c)return;const B=e.target.closest("button");
   if(e.target.closest("[data-cedit]")){openClientForm(c);return}
   if(e.target.closest("[data-cview]")){showPortal(c.name);return}
+  if(e.target.closest("[data-crename]")){const b=card.querySelector("[data-renbox]");b.hidden=!b.hidden;if(!b.hidden){const i=b.querySelector("input");i.focus();i.setSelectionRange(i.value.length,i.value.length)}return}
+  if(e.target.closest("[data-rengo]")){
+    const to=card.querySelector("[data-newname]").value.trim().replace(/\s+/g," ");if(!to||to===c.name){fail("Введите новое название");return}
+    const other=AC.clients.find(x=>x.ckey===norm(to)&&x.ckey!==c.ckey);
+    if(other&&!B.dataset.confirm){B.dataset.confirm="1";B.textContent=`Объединить с «${other.name}»?`;return}
+    const res=await run(B,"Переименовываю…",()=>api("POST","/api/clients/rename",{from:c.name,to}));
+    if(res){okb(`«${c.name}» → «${to}»: ${res.units} шт. на складе, логинов ${res.logins}`);AC.open.delete(c.ckey);AC.open.add(norm(to));await loadAccess();if(hasData())load(ALL_PARTS)}
+    return}
   if(e.target.closest("[data-addsub]")){const i=card.querySelector("[data-newsub]"),name=i.value.trim();if(!name){fail("Введите название подразделения");i.focus();return}
     const res=await run(B,"…",()=>api("POST","/api/clients/sub",{client:c.name,name}));if(res){okb("Подразделение добавлено");await loadAccess()}return}
   const sub=e.target.closest("[data-sub]");

@@ -1,5 +1,5 @@
 /* Сначала сеть, потом кэш: приложение всегда свежее, а при плохой связи открывается из кэша. API не кэшируется. */
-const CACHE = "sklad-v1.3.1";
+const CACHE = "sklad-v1.3.2";
 const SHELL = ["./", "index.html", "app.css", "app.js", "manifest.webmanifest", "icon.svg", "vendor/xlsx.full.min.js", "vendor/JsBarcode.all.min.js", "vendor/zxing.min.js"];
 
 self.addEventListener("install", e => {

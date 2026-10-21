@@ -879,6 +879,46 @@ route("POST", "/api/clients", "admin", ({ body }) => {
     .run(ckey, name, card.inn, card.kpp, card.ogrn, card.address, card.bank_id, now());
   return { ok: true, ckey };
 });
+/* переименовать клиента или слить два написания в одно («ИП Чипчиков» → «ИП Чипчиков Р.»):
+   остатки, товары, журнал, приёмки, услуги, счета, цены, подразделения и логины переезжают на новое имя */
+route("POST", "/api/clients/rename", "admin", ({ body }) => {
+  const from = norm(body.from), to = str(body.to, 160).replace(/\s+/g, " "), tk = norm(to);
+  if (!from) throw bad("Не выбран клиент");
+  if (!tk) throw bad("Укажите новое название");
+  const users = db.prepare("SELECT id, client FROM users WHERE role='client'").all().filter(u => norm(u.client) === from).map(u => u.id);
+  const moved = tx(() => {
+    let n = 0;
+    for (const r of db.prepare("SELECT * FROM stock WHERE ckey=?").all(from)) {
+      if (from !== tk) { Q.stockDel.run(r.id); addStock(r.cell, to, r.article, r.name, r.qty); }
+      n += r.qty;
+    }
+    db.prepare("UPDATE stock SET client=? WHERE ckey=?").run(to, tk);
+    for (const p of db.prepare("SELECT * FROM products WHERE ckey=?").all(from)) {
+      const t = from !== tk && Q.prodByKey.get(tk, p.akey);
+      if (t) {
+        const bcs = JSON.stringify([...new Set([...JSON.parse(t.barcodes), ...JSON.parse(p.barcodes)])]);
+        db.prepare("DELETE FROM products WHERE id=?").run(p.id);
+        Q.prodUpd.run(t.name || p.name, bcs, now(), t.id);
+      } else db.prepare("UPDATE products SET client=?, ckey=? WHERE id=?").run(to, tk, p.id);
+    }
+    db.prepare("UPDATE products SET client=? WHERE ckey=?").run(to, tk);
+    for (const t of ["ops", "receipts", "charges", "invoices"]) db.prepare(`UPDATE ${t} SET client=?, ckey=? WHERE ckey=?`).run(to, tk, from);
+    if (from !== tk) {
+      db.prepare("INSERT OR IGNORE INTO client_prices(ckey,service_id,price) SELECT ?, service_id, price FROM client_prices WHERE ckey=?").run(tk, from);
+      db.prepare("DELETE FROM client_prices WHERE ckey=?").run(from);
+      db.prepare("UPDATE client_subs SET ckey=? WHERE ckey=?").run(tk, from);
+      const card = db.prepare("SELECT * FROM clients WHERE ckey=?").get(from);
+      if (card && !db.prepare("SELECT 1 FROM clients WHERE ckey=?").get(tk)) db.prepare("UPDATE clients SET ckey=?, name=? WHERE ckey=?").run(tk, to, from);
+      else db.prepare("DELETE FROM clients WHERE ckey=?").run(from);
+    }
+    db.prepare("UPDATE clients SET name=? WHERE ckey=?").run(to, tk);
+    for (const id of users) db.prepare("UPDATE users SET client=? WHERE id=?").run(to, id);
+    return n;
+  });
+  users.forEach(closeStreams);
+  broadcast(["stock", "products", "ops", "receipts", "billing"], [tk]);
+  return { ok: true, units: moved, logins: users.length };
+});
 route("POST", "/api/clients/sub", "admin", ({ body }) => {
   const name = str(body.name, 120);
   if (!name) throw bad("Укажите название подразделения");
