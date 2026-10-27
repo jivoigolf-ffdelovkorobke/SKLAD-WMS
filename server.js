@@ -1472,12 +1472,19 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "same-origin");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  // склад — внутренняя программа: поисковики не должны показывать страницу входа вместо сайта компании
+  res.setHeader("X-Robots-Tag", "noindex, nofollow");
   // названия товаров и клиентов вводят люди и файлы: даже если где-то забудем экранировать, чужой скрипт не выполнится
   res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
   const url = new URL(req.url, "http://x");
   try {
     if (!url.pathname.startsWith("/api/")) {
       if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Метод не поддерживается" });
+      // обход не запрещаем: робот должен зайти и увидеть X-Robots-Tag, иначе уже попавшая в индекс страница там останется
+      if (url.pathname === "/robots.txt") {
+        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache" });
+        return res.end("User-agent: *\nDisallow:\n");
+      }
       return serveStatic(req, res, url.pathname);
     }
     const r = routes.find(x => x.method === req.method && x.pathname === url.pathname);

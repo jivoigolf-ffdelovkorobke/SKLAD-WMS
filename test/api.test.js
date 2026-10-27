@@ -246,3 +246,13 @@ test("переименование клиента сливает два напи
   const u = (await admin("GET", "/api/users")).users.find(x => x.login === "chip");
   assert.equal(u.client, "ИП Чипчиков Р.");
 });
+
+test("склад закрыт от поисковиков: X-Robots-Tag и robots.txt", async () => {
+  const page = await fetch(base + "/");
+  assert.equal(page.headers.get("x-robots-tag"), "noindex, nofollow");
+  const robots = await fetch(base + "/robots.txt");
+  assert.equal(robots.status, 200);
+  assert.match(robots.headers.get("content-type"), /^text\/plain/);
+  assert.equal(robots.headers.get("x-robots-tag"), "noindex, nofollow");
+  assert.equal(await robots.text(), "User-agent: *\nDisallow:\n");
+});
