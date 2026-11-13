@@ -997,9 +997,15 @@ function renderProd(){
     <td><input type="checkbox" id="ps_${p.id}" ${pSel.has(p.id)?"checked":""} aria-label="Выбрать для этикеток" style="width:20px;min-height:0"></td>
     <td class="mono wrap-any">${esc(p.article)}</td><td>${esc(p.name)}</td><td>${esc(p.client)}</td>
     <td class="mono wrap-any">${(p.barcodes||[]).map(esc).join("<br>")||'<span class="chip warn">нет</span>'}</td><td class="num mono">${p.total}</td>
-    <td class="num"><button class="btn sm ghost" data-edit type="button">Изменить</button></td></tr>`).join("")}</tbody></table></div>${rows.length>shown.length?`<p class="hint">Показаны первые ${shown.length} из ${rows.length}. Уточните поиск.</p>`:""}`;
+    <td class="num"><span class="row nowrap" style="justify-content:flex-end"><button class="btn sm ghost" data-edit type="button">Изменить</button>${isAdmin()?'<button class="btn sm ghost" data-ren type="button" title="Переименовать артикул везде: остатки, журнал, приёмки">Артикул</button>':""}</span></td></tr>`).join("")}</tbody></table></div>${rows.length>shown.length?`<p class="hint">Показаны первые ${shown.length} из ${rows.length}. Уточните поиск.</p>`:""}`;
 }
 $("pTable").addEventListener("change",e=>{const cb=e.target.closest("input[type=checkbox]");if(!cb)return;const id=cb.closest("tr").dataset.id;cb.checked?pSel.add(id):pSel.delete(id);renderProd()});
+$("pTable").addEventListener("click",async e=>{const rb=e.target.closest("[data-ren]");if(!rb)return;const p=D.products.get(rb.closest("tr").dataset.id);if(!p)return;
+  const to=(prompt(`Новый артикул вместо «${p.article}» (${p.client}).\nИзменится везде: остатки, карточка, журнал, приёмки.`,p.article)||"").trim();
+  if(!to||to===p.article)return;
+  const res=await run(rb,"…",()=>api("POST","/api/articles/rename",{client:p.client,from:p.article,to}));
+  if(res){await load(["stock","products","ops"]);okb(`Артикул ${p.article} → ${to}`)}
+});
 $("pTable").addEventListener("click",e=>{if(!e.target.closest("[data-edit]"))return;const p=D.products.get(e.target.closest("tr").dataset.id);if(!p)return;
   $("pClient").value=p.client;$("pArt").value=p.article;$("pName").value=p.name||"";$("pBc").value=(p.barcodes||[]).join(", ");$("pFold").open=true;$("pName").focus();window.scrollTo({top:0,behavior:"smooth"})});
 $("pSelAll").addEventListener("change",e=>{prodRows().forEach(p=>e.target.checked?pSel.add(p.id):pSel.delete(p.id));renderProd()});

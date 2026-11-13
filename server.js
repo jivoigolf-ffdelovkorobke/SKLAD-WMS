@@ -716,6 +716,57 @@ route("POST", "/api/products/from-stock", "perm:stock", () => {
   return { ok };
 });
 
+/* Переименование артикула клиента (только администратор). Меняет остатки, карточку, журнал, приёмки и заявки.
+   Если новый артикул уже есть — остатки в тех же ячейках складываются, штрихкоды карточек объединяются. */
+function renameArticle(client, from, to) {
+  const ck = norm(client), fk = norm(from), tk = norm(to);
+  to = str(to);
+  let units = 0;
+  for (const r of db.prepare("SELECT * FROM stock WHERE ckey=? AND akey=?").all(ck, fk)) {
+    Q.stockDel.run(r.id); addStock(r.cell, r.client, to, r.name, r.qty); units += r.qty;
+  }
+  const p = Q.prodByKey.get(ck, fk);
+  if (p) {
+    const t = fk !== tk && Q.prodByKey.get(ck, tk);
+    if (t) {
+      db.prepare("DELETE FROM products WHERE id=?").run(p.id);
+      Q.prodUpd.run(t.name || p.name, JSON.stringify([...new Set([...JSON.parse(t.barcodes), ...JSON.parse(p.barcodes)])]), now(), t.id);
+    } else db.prepare("UPDATE products SET article=?, akey=?, updated=? WHERE id=?").run(to, tk, now(), p.id);
+  }
+  const upd = db.prepare("UPDATE ops SET article=? WHERE id=?");
+  let ops = 0;
+  for (const o of db.prepare("SELECT id, article FROM ops WHERE ckey=?").all(ck)) if (norm(o.article) === fk) { upd.run(to, o.id); ops++; }
+  for (const t of ["receipts", "asn"]) {
+    const u = db.prepare(`UPDATE ${t} SET lines=? WHERE id=?`);
+    for (const r of db.prepare(`SELECT id, lines FROM ${t} WHERE ckey=?`).all(ck)) {
+      const lines = JSON.parse(r.lines);
+      let hit = false;
+      for (const l of lines) if (norm(l.article) === fk) { l.article = to; hit = true; }
+      if (hit) u.run(JSON.stringify(lines), r.id);
+    }
+  }
+  return { units, ops, found: !!p || units > 0 || ops > 0 };
+}
+route("POST", "/api/articles/rename", "admin", ({ body }) => {
+  const client = str(body.client);
+  if (!norm(client)) throw bad("Не выбран клиент");
+  const pairs = (Array.isArray(body.pairs) ? body.pairs : [{ from: body.from, to: body.to }])
+    .map(p => ({ from: str(p.from), to: str(p.to).replace(/\s+/g, " ") }));
+  if (!pairs.length) throw bad("Нечего переименовывать");
+  for (const p of pairs) {
+    if (!p.from) throw bad("Не указан старый артикул");
+    if (!p.to) throw bad(`Укажите новый артикул для ${p.from}`);
+  }
+  const done = tx(() => pairs.map(p => {
+    if (p.from === p.to) return { ...p, units: 0, ops: 0, found: true };
+    const r = renameArticle(client, p.from, p.to);
+    if (!r.found) throw bad(`У клиента ${client} нет артикула ${p.from}`);
+    return { ...p, ...r };
+  }));
+  broadcast(["stock", "products", "ops", "receipts", "asn"], [norm(client)]);
+  return { ok: true, renamed: done };
+});
+
 /* Ячейки */
 route("POST", "/api/cells", "perm:stock|ops", ({ body }) => {
   const list = (Array.isArray(body.cells) ? body.cells : []).map(normCell).filter(Boolean);
