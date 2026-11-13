@@ -6,6 +6,8 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 const norm=s=>String(s??"").trim().toLowerCase().replace(/\s+/g," ");
 const LOOK={"А":"A","В":"B","Е":"E","К":"K","М":"M","Н":"H","О":"O","Р":"P","С":"C","Т":"T","Х":"X","У":"Y"};
 const normCell=s=>String(s??"").trim().toUpperCase().replace(/\s+/g,"").replace(/[АВЕКМНОРСТХУ]/g,c=>LOOK[c]);
+/* артикул из листа подбора: «КРМ-210…» (кириллица) и «KPM 210…» (латиница, пробел) — один и тот же товар */
+const artKey=s=>String(s??"").trim().toUpperCase().replace(/[АВЕКМНОРСТХУ]/g,c=>LOOK[c]).replace(/[\s-]+/g,"-");
 /* сканер на русской раскладке печатает «Ф-01» вместо «A-01» */
 const RU="ёйцукенгшщзхъфывапролджэячсмитьбю", EN="`qwertyuiop[]asdfghjkl;'zxcvbnm,.";
 const fixLayout=s=>String(s).split("").map(c=>{const i=RU.indexOf(c.toLowerCase());if(i<0)return c;const e=EN[i];return c===c.toLowerCase()?e:e.toUpperCase()}).join("");
@@ -666,6 +668,8 @@ function renderFiles(){
 function pickLines(f){
   const out=[];if(f.cols.art<0&&f.cols.bc<0)return out;
   for(let r=f.hdr+1;r<f.matrix.length;r++){const row=f.matrix[r]||[];
+    // Ozon: отменённые отправления в выгрузке остаются, собирать их не нужно
+    if(f.cols.status>=0&&/отмен/i.test(cellv(row,f.cols.status)))continue;
     let art=cellv(row,f.cols.art);let name=cellv(row,f.cols.name);
     if(!art){const bc=cellv(row,f.cols.bc);if(!bc)continue;const it=findItems(bc)[0];art=it?it.article:bc;if(!name&&it)name=it.name}
     const q=f.cols.qty>=0?num(row[f.cols.qty]):1;if(!(q>0))continue;
@@ -676,7 +680,7 @@ $("files").addEventListener("change",e=>{const s=e.target.closest("select");if(!
 $("files").addEventListener("click",e=>{const b=e.target.closest("[data-rm]");if(!b)return;files.splice(+b.dataset.rm,1);renderFiles()});
 async function addPickFiles(list){
   for(const file of list){
-    try{const m=await readMatrix(file);let d=detect(m,["art"]);if(d.cols.art<0)d=detect(m,["bc"]);files.push({name:file.name,matrix:m,hdr:d.hdr,cols:{art:d.cols.art,bc:d.cols.bc,qty:d.cols.qty,name:d.cols.name}})}
+    try{const m=await readMatrix(file);let d=detect(m,["art"]);if(d.cols.art<0)d=detect(m,["bc"]);files.push({name:file.name,matrix:m,hdr:d.hdr,cols:{art:d.cols.art,bc:d.cols.bc,qty:d.cols.qty,name:d.cols.name,status:(m[d.hdr]||[]).findIndex(h=>norm(h)==="статус")}})}
     catch(err){fail("Не удалось прочитать "+file.name+": "+(err.message||err))}
   }
   renderFiles();renderClientSelects();
@@ -690,10 +694,10 @@ $("clearFiles").addEventListener("click",()=>{files=[];renderFiles()});
 
 function buildPlan(){
   const need=new Map();
-  files.forEach(f=>pickLines(f).forEach(l=>{const k=norm(l.art);const cur=need.get(k)||{art:l.art,qty:0,name:l.name};cur.qty+=l.qty;if(!cur.name)cur.name=l.name;need.set(k,cur)}));
+  files.forEach(f=>pickLines(f).forEach(l=>{const k=artKey(l.art);const cur=need.get(k)||{art:l.art,qty:0,name:l.name};cur.qty+=l.qty;if(!cur.name)cur.name=l.name;need.set(k,cur)}));
   const client=$("pickClient").value;
   const byArt=new Map(),inBuf=new Map();
-  D.stock.forEach(r=>{if(!(r.qty>0))return;if(client&&norm(r.client)!==norm(client))return;const k=norm(r.article);
+  D.stock.forEach(r=>{if(!(r.qty>0))return;if(client&&norm(r.client)!==norm(client))return;const k=artKey(r.article);
     if(r.cell===BUF){inBuf.set(k,(inBuf.get(k)||0)+r.qty);return}
     if(!byArt.has(k))byArt.set(k,[]);byArt.get(k).push(r)});
   const snake=$("snake").checked;
